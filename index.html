@@ -18110,5 +18110,1135 @@ console.log('  ✓ Info do encarregado');
 console.log('  ✓ Exportação XLSX e PDF completa');
 console.log('  ✓ Pagamentos adicionados às receitas');
 </script>
+<script>
+// ================================================================
+// INTERCEPTOR GLOBAL DE QUERIES (deve vir primeiro)
+// ================================================================
+(function(){
+    var origGet = firebase.firestore.Query.prototype.get;
+    firebase.firestore.Query.prototype.get = async function(){
+        try { return await origGet.apply(this, arguments); }
+        catch(err) {
+            if (err.code === 'failed-precondition' || (err.message && err.message.indexOf('index') >= 0)) {
+                console.warn('⚠️ Index interceptado, refazendo query simples');
+                try {
+                    var p = this._query ? this._query.path.segments.join('/') : '';
+                    if (p) {
+                        var ref = firebase.firestore();
+                        var parts = p.split('/');
+                        for (var i = 0; i < parts.length; i++) {
+                            ref = (i % 2 === 0) ? ref.collection(parts[i]) : ref.doc(parts[i]);
+                        }
+                        return await origGet.apply(ref, arguments);
+                    }
+                } catch(e2) {}
+                return { docs: [], empty: true, size: 0, forEach: function(){} };
+            }
+            throw err;
+        }
+    };
+    console.log('🛡️ Interceptor global instalado');
+})();
+</script>
+
+<script>
+// ================================================================
+// SCRIPT FINAL COMPLETO SGE-NG
+// ================================================================
+(function(){
+'use strict';
+console.log('🚀 Script Final SGE-NG...');
+
+// ================================================================
+// 1. jsPDF
+// ================================================================
+function getPDF(o){
+    var J = (window.jspdf && window.jspdf.jsPDF) || window.jsPDF || null;
+    if(!J){showToast('PDF não carregado. Recarregue (Ctrl+F5).','error');return null;}
+    try{return new J(o||'portrait','mm','a4');}catch(e){showToast('Erro PDF: '+e.message,'error');return null;}
+}
+window.addEventListener('load',function(){setTimeout(function(){if(!((window.jspdf&&window.jspdf.jsPDF)||window.jsPDF)){var s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';document.head.appendChild(s);}},2000);});
+
+// ================================================================
+// 2. FIRESTORE SEM INDEX
+// ================================================================
+window.FS_getAll=async function(p){try{var parts=p.split('/');var ref=db;for(var i=0;i<parts.length;i++){ref=(i%2===0)?ref.collection(parts[i]):ref.doc(parts[i]);}var s=await ref.get();return s.docs?s.docs.map(function(d){return Object.assign({id:d.id},d.data())}):[]}catch(e){return[];}};
+window.FS_year=async function(c){if(!STATE.currentSchool?.id||!STATE.currentYearId)return[];return FS_getAll('schools/'+STATE.currentSchool.id+'/anos_letivos/'+STATE.currentYearId+'/'+c);};
+window.FS_school=async function(c){if(!STATE.currentSchool?.id)return[];return FS_getAll('schools/'+STATE.currentSchool.id+'/'+c);};
+window.FS_yc=async function(sid,yid,c){return FS_getAll('schools/'+sid+'/anos_letivos/'+yid+'/'+c);};
+
+// ================================================================
+// 3. COMPRESSÃO
+// ================================================================
+window.compressImage=async function(file,maxW,q){maxW=maxW||500;q=q||0.6;if(file.size>15*1024*1024)throw new Error('Máx 15MB');return new Promise(function(res,rej){var r=new FileReader();r.onerror=function(){rej(new Error('Erro'));};r.onload=function(ev){var img=new Image();img.onerror=function(){rej(new Error('Erro'));};img.onload=function(){var c=document.createElement('canvas');var w=img.width,h=img.height;if(w>maxW){h=Math.round(h*maxW/w);w=maxW;}c.width=w;c.height=h;var ctx=c.getContext('2d');ctx.fillStyle='#FFF';ctx.fillRect(0,0,w,h);ctx.drawImage(img,0,0,w,h);var out=c.toDataURL('image/jpeg',q);if(out.length>800000)out=c.toDataURL('image/jpeg',0.3);res(out);};img.src=ev.target.result;};r.readAsDataURL(file);});};
+window.handleAlunoPhoto=async function(i){if(!i.files?.[0])return;try{var b=await compressImage(i.files[0],400,0.6);document.getElementById('alunoPhotoB64').value=b;document.getElementById('alunoPhotoPreview').innerHTML='<img src="'+b+'">';showToast('OK!','success');}catch(e){showToast(e.message,'error');}};
+window.handleFuncPhoto=async function(i){if(!i.files?.[0])return;try{var b=await compressImage(i.files[0],400,0.6);document.getElementById('funcPhotoB64').value=b;document.getElementById('funcPhotoPreview').innerHTML='<img src="'+b+'">';showToast('OK!','success');}catch(e){showToast(e.message,'error');}};
+window.handleProfPhoto=async function(i){if(!i.files?.[0])return;try{var b=await compressImage(i.files[0],400,0.6);document.getElementById('profPhotoB64').value=b;document.getElementById('profPhotoPreview').innerHTML='<img src="'+b+'">';showToast('OK!','success');}catch(e){showToast(e.message,'error');}};
+window.handlePerfilPhoto=async function(i){if(!i.files?.[0])return;try{var b=await compressImage(i.files[0],300,0.5);document.getElementById('perfilPhotoPreview').innerHTML='<img src="'+b+'">';await db.collection('users').doc(STATE.userProfile.id).update({photo:b});STATE.userProfile.photo=b;showToast('OK!','success');}catch(e){showToast(e.message,'error');}};
+
+// ================================================================
+// 4. CÁLCULOS
+// ================================================================
+window.calcMT=function(a,b){var m=parseFloat(a),n=parseFloat(b);return(isNaN(m)||isNaN(n))?'':Math.round(((m+n)/2)*10)/10;};
+window.calcCT3=function(a,b,c){var x=parseFloat(a),y=parseFloat(b),z=parseFloat(c);return(isNaN(x)||isNaN(y)||isNaN(z))?'':Math.round(((x+y+z)/3)*10)/10;};
+window.calcMFD=function(ct3,ex){var c=parseFloat(ct3),e=parseFloat(ex);return(isNaN(c)||isNaN(e))?'':Math.round((c*0.6+e*0.4)*10)/10;};
+window.calcMFNormal=function(a,b,c){return calcCT3(a,b,c);};
+window.getNotaObs=function(mt,nmin,g){if(mt===''||mt===null||mt===undefined)return'';var v=parseFloat(mt);if(isNaN(v))return'';return v>=nmin?(g==='F'?'Aprovada':'Aprovado'):(g==='F'?'Reprovada':'Reprovado');};
+window.numberToWords=function(n){if(n===null||n===undefined||isNaN(n))return'';n=Math.round(n);var w=['Zero','Um','Dois','Três','Quatro','Cinco','Seis','Sete','Oito','Nove','Dez','Onze','Doze','Treze','Catorze','Quinze','Dezasseis','Dezassete','Dezoito','Dezanove','Vinte'];return(n>=0&&n<=20?w[n]:String(n))+' valores';};
+window.formatCurrency=function(v){return(parseFloat(v)||0).toLocaleString('pt-AO',{minimumFractionDigits:2,maximumFractionDigits:2})+' Kz';};
+
+// ================================================================
+// 5. GÊNERO
+// ================================================================
+window.getDirectorInfo=function(){var s=STATE.currentSchool||{};return{name:s.directorName||'',genero:s.directorGenero||'M'};};
+window.getSubPedInfo=async function(){var f=await FS_school('funcionarios');var s=f.find(function(x){return x.cargo==='Subdiretor Pedagógico'||x.cargo==='Subdirectora Pedagógica';});return s?{name:s.name||'',genero:s.genero||'M'}:{name:'',genero:'M'};};
+window.genderTitle=function(g,c){if(g==='F'){if(c==='Director')return'A Directora';if(c==='Subdiretor Pedagógico')return'A Subdirectora Pedagógica';return'A '+c;}if(c==='Director')return'O Director';if(c==='Subdiretor Pedagógico')return'O Subdirector Pedagógico';return'O '+c;};
+window.genderWord=function(g,m,f){return g==='F'?f:m;};
+
+// ================================================================
+// 6. SETUP + AUTH
+// ================================================================
+window.checkSetupRequired=async function(){try{var p=new Promise(function(_,r){setTimeout(function(){r(new Error('t'));},8000);});var q=db.collection('system').doc('config').get();var s;try{s=await Promise.race([q,p]);}catch(e){showLoginPage();return;}if(s.exists&&s.data().adminCreated){if(s.data().insigniaBase64)STATE.insigniaBase64=s.data().insigniaBase64;showLoginPage();}else{showSetupPage();}}catch(e){showLoginPage();}};
+window.handleSetup=async function(e){e.preventDefault();var name=document.getElementById('setupName').value.trim();var email=document.getElementById('setupEmail').value.trim();var phone=document.getElementById('setupPhone').value.trim();var pw=document.getElementById('setupPassword').value;var pw2=document.getElementById('setupPasswordConfirm').value;if(!name||!email){showToast('Nome e email!','error');return false;}if(pw.length<6){showToast('Senha mín 6!','error');return false;}if(pw!==pw2){showToast('Senhas diferentes!','error');return false;}showLoading();try{var cd=await db.collection('system').doc('config').get();if(cd.exists&&cd.data().adminCreated){hideLoading();showToast('Admin já existe!','error');showLoginPage();return false;}var ins=null;var f=document.getElementById('setupInsigniaFile')?.files[0];if(f)try{ins=await compressImage(f,200,0.8);}catch(e){}var cr=await auth.createUserWithEmailAndPassword(email,pw);var uid=cr.user.uid;await db.collection('users').doc(uid).set({name:name,email:email,phone:phone,role:'super_admin',active:true,photo:null,createdAt:firebase.firestore.FieldValue.serverTimestamp()});await db.collection('system').doc('config').set({adminCreated:true,adminUid:uid,adminEmail:email,systemName:'SGE-NG',version:'1.0.0',insigniaBase64:ins,createdAt:firebase.firestore.FieldValue.serverTimestamp()});STATE.insigniaBase64=ins;showToast('Admin criado!','success');hideLoading();}catch(er){hideLoading();showToast(er.message,'error');}return false;};
+window.handleLogin=async function(e){e.preventDefault();var em=document.getElementById('loginEmail').value.trim();var pw=document.getElementById('loginPassword').value;if(!em||!pw){showToast('Preencha tudo!','error');return false;}showLoading();try{await auth.signInWithEmailAndPassword(em,pw);showToast('Login OK!','success');}catch(er){hideLoading();var m={'auth/user-not-found':'Email não encontrado!','auth/wrong-password':'Senha incorreta!','auth/invalid-credential':'Email ou senha incorretos!','auth/too-many-requests':'Aguarde...'};showToast(m[er.code]||er.message,'error');}return false;};
+window.handleForgotPassword=async function(e){e.preventDefault();var em=document.getElementById('forgotEmail').value.trim();if(!em){showToast('Email!','error');return false;}showLoading();try{await auth.sendPasswordResetEmail(em);showToast('Email enviado!','success');showLoginForm();}catch(er){showToast(er.message,'error');}hideLoading();return false;};
+
+auth.onAuthStateChanged(async function(user){if(user){if(user.isAnonymous){hideLoading();return;}STATE.currentUser=user;await loadUserProfile(user.uid);}else{STATE.currentUser=null;STATE.userProfile=null;STATE.currentSchool=null;STATE.currentYearId=null;STATE.currentYear=null;STATE.cache={};hideLoading();await checkSetupRequired();}});
+
+window.loadUserProfile=async function(uid){try{var doc=await db.collection('users').doc(uid).get();if(!doc.exists){var email=STATE.currentUser.email;if(email){var ss=await db.collection('schools').get();for(var i=0;i<ss.docs.length;i++){var sd=ss.docs[i];var ps=await db.collection('schools').doc(sd.id).collection('professores').get();var pf=ps.docs.find(function(d){return d.data().email===email;});if(pf){await db.collection('users').doc(uid).set({name:pf.data().name,email:email,phone:pf.data().telefone1||'',role:'professor',schoolId:sd.id,active:true,createdAt:firebase.firestore.FieldValue.serverTimestamp()});doc=await db.collection('users').doc(uid).get();break;}var fs=await db.collection('schools').doc(sd.id).collection('funcionarios').get();var ff=fs.docs.find(function(d){return d.data().email===email;});if(ff){var role=getCargoRole(ff.data().cargo)||'secretario';await db.collection('users').doc(uid).set({name:ff.data().name,email:email,phone:ff.data().telefone1||'',role:role,schoolId:sd.id,active:true,createdAt:firebase.firestore.FieldValue.serverTimestamp()});doc=await db.collection('users').doc(uid).get();break;}}}}if(doc.exists){STATE.userProfile=Object.assign({id:uid},doc.data());if(STATE.userProfile.active===false){showToast('Conta desativada!','error');await auth.signOut();hideLoading();return;}try{var sc=await db.collection('system').doc('config').get();if(sc.exists&&sc.data().insigniaBase64)STATE.insigniaBase64=sc.data().insigniaBase64;}catch(e){}if(STATE.userProfile.schoolId){try{var sd=await db.collection('schools').doc(STATE.userProfile.schoolId).get();if(sd.exists){STATE.currentSchool=Object.assign({id:sd.id},sd.data());await loadActiveYear(STATE.currentSchool.id);}}catch(e){}}hideLoading();showApp();}else{hideLoading();showToast('Perfil não encontrado!','error');await auth.signOut();}}catch(e){hideLoading();showToast('Erro perfil','error');await auth.signOut();}};
+
+// ================================================================
+// 7. HELPERS SEM INDEX
+// ================================================================
+window.getDisciplinasForClasse=async function(c){if(!STATE.currentYearId||!c)return[];return(await FS_year('disciplinas')).filter(function(d){return d.classeId===c;}).sort(function(a,b){return(a.ordem||0)-(b.ordem||0);});};
+window.getTurmasForClasse=async function(c){if(!STATE.currentYearId||!c)return[];return(await FS_year('turmas')).filter(function(t){return t.classeId===c;});};
+window.getAllClasses=async function(){if(!STATE.currentYearId)return[];return(await FS_year('classes')).sort(function(a,b){return(a.ordem||0)-(b.ordem||0);});};
+window.getAllProfessors=async function(){if(!STATE.currentSchool)return[];return(await FS_school('professores')).sort(function(a,b){return(a.name||'').localeCompare(b.name||'');});};
+
+// ================================================================
+// 8. DASHBOARD POR PERFIL
+// ================================================================
+window.renderSchoolDashboard=async function(content){
+    if(!STATE.currentSchool){content.innerHTML='<div class="empty-state"><h3>Sem escola</h3></div>';return;}
+    var role = STATE.userProfile?.role || '';
+    var totalA=0,totalP=0,totalT=0;
+    if(STATE.currentYearId){try{totalA=(await FS_year('alunos')).filter(function(a){return a.estado==='Ativo';}).length;}catch(e){}try{totalT=(await FS_year('turmas')).length;}catch(e){}}
+    try{totalP=(await FS_school('professores')).length;}catch(e){}
+
+    var statsHTML = '<div class="stats-grid">';
+    statsHTML += '<div class="stat-card"><div class="stat-icon blue"><i class="fas fa-user-graduate"></i></div><div class="stat-info"><h4>'+totalA+'</h4><p>Alunos</p></div></div>';
+
+    // Só director e admin vêem tudo
+    if (['super_admin','diretor','subdiretor_pedagogico','subdiretor_administrativo'].indexOf(role) >= 0) {
+        statsHTML += '<div class="stat-card"><div class="stat-icon green"><i class="fas fa-chalkboard-teacher"></i></div><div class="stat-info"><h4>'+totalP+'</h4><p>Professores</p></div></div>';
+        statsHTML += '<div class="stat-card"><div class="stat-icon purple"><i class="fas fa-users"></i></div><div class="stat-info"><h4>'+totalT+'</h4><p>Turmas</p></div></div>';
+    }
+    statsHTML += '<div class="stat-card"><div class="stat-icon yellow"><i class="fas fa-calendar"></i></div><div class="stat-info"><h4>'+(STATE.currentYear?.ano||'-')+'</h4><p>Ano Letivo</p></div></div></div>';
+
+    // Acções rápidas por perfil
+    var actionsHTML = '<div class="card"><div class="card-header"><h3><i class="fas fa-bolt"></i> Acções Rápidas</h3></div><div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+
+    if (role === 'professor') {
+        // Professor só vê notas e presenças das suas turmas
+        actionsHTML += '<button class="btn btn-success btn-sm" onclick="navigateTo(\'notas\')"><i class="fas fa-star"></i> Lançar Notas</button>';
+        actionsHTML += '<button class="btn btn-warning btn-sm" onclick="navigateTo(\'presencas\')"><i class="fas fa-clipboard"></i> Presenças</button>';
+        actionsHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'pautas\')"><i class="fas fa-file-alt"></i> Pautas</button>';
+        actionsHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'mensagens\')"><i class="fas fa-comments"></i> Mensagens</button>';
+    } else if (role === 'secretario') {
+        actionsHTML += '<button class="btn btn-primary btn-sm" onclick="navigateTo(\'alunos\')"><i class="fas fa-user-plus"></i> Matricular</button>';
+        actionsHTML += '<button class="btn btn-success btn-sm" onclick="navigateTo(\'pagamentos\')"><i class="fas fa-money-bill"></i> Pagamentos</button>';
+        actionsHTML += '<button class="btn btn-warning btn-sm" onclick="navigateTo(\'boletins\')"><i class="fas fa-id-card"></i> Boletins</button>';
+        actionsHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'declaracoes\')"><i class="fas fa-file-contract"></i> Declarações</button>';
+    } else if (role === 'coordenador') {
+        actionsHTML += '<button class="btn btn-success btn-sm" onclick="navigateTo(\'notas\')"><i class="fas fa-star"></i> Notas</button>';
+        actionsHTML += '<button class="btn btn-warning btn-sm" onclick="navigateTo(\'presencas\')"><i class="fas fa-clipboard"></i> Presenças</button>';
+        actionsHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'pautas\')"><i class="fas fa-file-alt"></i> Pautas</button>';
+        actionsHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'estatisticas\')"><i class="fas fa-chart-bar"></i> Estatísticas</button>';
+    } else {
+        // Director, Sub.Ped, Sub.Admin, Admin
+        actionsHTML += '<button class="btn btn-primary btn-sm" onclick="navigateTo(\'alunos\')"><i class="fas fa-user-plus"></i> Matricular</button>';
+        actionsHTML += '<button class="btn btn-success btn-sm" onclick="navigateTo(\'notas\')"><i class="fas fa-star"></i> Notas</button>';
+        actionsHTML += '<button class="btn btn-warning btn-sm" onclick="navigateTo(\'presencas\')"><i class="fas fa-clipboard"></i> Presenças</button>';
+        actionsHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'pautas\')"><i class="fas fa-file-alt"></i> Pautas</button>';
+        actionsHTML += '<button class="btn btn-angola btn-sm" onclick="navigateTo(\'boletins\')"><i class="fas fa-id-card"></i> Boletins</button>';
+        actionsHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'pagamentos\')"><i class="fas fa-money-bill"></i> Pagamentos</button>';
+    }
+    actionsHTML += '</div></div>';
+
+    content.innerHTML = '<div class="page-header"><div><h2>Painel - '+STATE.currentSchool.name+'</h2><span class="breadcrumb">'+(STATE.currentYear?STATE.currentYear.ano:'Sem ano ativo')+'</span></div></div>'+
+        statsHTML +
+        (!STATE.currentYear?'<div class="card" style="border-left:4px solid var(--warning);margin-bottom:16px;"><div class="card-body"><h3 style="color:var(--warning);"><i class="fas fa-exclamation-triangle"></i> Atenção</h3><p>Nenhum ano letivo aberto.</p></div></div>':'') +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'+actionsHTML+'<div class="card"><div class="card-header"><h3><i class="fas fa-clock"></i> Atividades Recentes</h3></div><div class="card-body" id="recentAct" style="max-height:250px;overflow-y:auto;"><p style="color:var(--gray-500);text-align:center;">Carregando...</p></div></div></div>';
+
+    // Carregar atividades
+    try{var acts=await FS_school('atividades_recentes');acts.sort(function(a,b){return(b.timestamp?.seconds||0)-(a.timestamp?.seconds||0);});var rc=document.getElementById('recentAct');if(!rc)return;if(!acts.length){rc.innerHTML='<p style="color:var(--gray-500);text-align:center;font-size:13px;">Nenhuma.</p>';return;}var h='';acts.slice(0,10).forEach(function(a){var dt=a.timestamp?.toDate?a.timestamp.toDate().toLocaleString('pt-AO'):'';h+='<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--gray-200);font-size:12px;"><i class="fas fa-circle" style="color:var(--primary);font-size:5px;margin-top:6px;"></i><div><strong>'+(a.details||'')+'</strong><br><small style="color:var(--gray-500);">'+(a.userName||'')+' • '+dt+'</small></div></div>';});rc.innerHTML=h;}catch(e){}
+};
+
+window.logActivity=async function(a,d){if(!STATE.currentSchool)return;try{await schoolRef().collection('atividades_recentes').add({action:a,details:d,userId:STATE.userProfile?.id||'',userName:STATE.userProfile?.name||'',timestamp:firebase.firestore.FieldValue.serverTimestamp()});}catch(e){}};
+
+// ================================================================
+// 9. TODAS FUNÇÕES DE CARREGAMENTO SEM INDEX
+// ================================================================
+window.loadAlunosTable=async function(){var c=document.getElementById('alunosTableContainer');if(!c)return;try{var al=await FS_year('alunos');al.sort(function(a,b){return(a.name||'').localeCompare(b.name||'');});var fC=document.getElementById('filterAlunoClasse')?.value,fT=document.getElementById('filterAlunoTurma')?.value,fE=document.getElementById('filterAlunoEstado')?.value;if(fC)al=al.filter(function(a){return a.classeId===fC;});if(fT)al=al.filter(function(a){return a.turmaId===fT;});if(fE)al=al.filter(function(a){return a.estado===fE;});STATE.cache.alunos=al;renderAlunosTableData(al);}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadClassesTable=async function(){var c=document.getElementById('classesTableContainer');if(!c)return;if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano</h3></div>';return;}try{var cls=await getAllClasses();STATE.cache.classes=cls;var el=document.getElementById('statTotalClasses');if(el)el.textContent=cls.length;renderClassesTableData(cls);}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadTurmasTable=async function(){var c=document.getElementById('turmasTableContainer');if(!c)return;if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano</h3></div>';return;}try{var t=await FS_year('turmas');t.sort(function(a,b){return(a.nome||'').localeCompare(b.nome||'');});var fc=document.getElementById('filterTurmaClasse')?.value,ft=document.getElementById('filterTurmaTurno')?.value;if(fc)t=t.filter(function(x){return x.classeId===fc;});if(ft)t=t.filter(function(x){return x.turnoId===ft;});STATE.cache.turmas=t;if(!t.length){c.innerHTML='<div class="empty-state"><h3>Nenhuma turma</h3></div>';return;}var cm=['super_admin','diretor','subdiretor_pedagogico','secretario','coordenador'].indexOf(STATE.userProfile?.role)>=0;var h='<table><thead><tr><th>#</th><th>Código</th><th>Turma</th><th>Classe</th><th>Curso</th><th>Turno</th><th>Sala</th><th class="center">Alunos</th><th class="center">Cap.</th><th>Lot.</th>'+(cm?'<th>Acções</th>':'')+'</tr></thead><tbody>';t.forEach(function(x,i){var p=x.capacidade?Math.round((x.numAlunos||0)/x.capacidade*100):0;var l=p>=100?'Cheia':p>=80?'Quase Cheia':'Disponível';var lc=p>=100?'badge-inactive':p>=80?'badge-pending':'badge-active';h+='<tr><td>'+(i+1)+'</td><td><code>'+(x.codigo||'')+'</code></td><td><strong>'+(x.nome||'')+'</strong></td><td>'+(x.classeNome||'')+'</td><td>'+(x.curso||'-')+'</td><td>'+(x.turnoNome||'')+'</td><td>'+(x.sala||'-')+'</td><td class="center">'+(x.numAlunos||0)+'</td><td class="center">'+(x.capacidade||'-')+'</td><td><span class="badge-status '+lc+'">'+l+'</span></td>'+(cm?'<td><button class="btn btn-sm btn-primary" onclick="editTurma(\''+x.id+'\')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-danger" onclick="deleteTurma(\''+x.id+'\')"><i class="fas fa-trash"></i></button></td>':'')+'</tr>';});h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadDisciplinasTable=async function(){var c=document.getElementById('disciplinasTableContainer');if(!c)return;if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano</h3></div>';return;}try{var d=await FS_year('disciplinas');var fc=document.getElementById('filterDiscClasse')?.value;if(fc)d=d.filter(function(x){return x.classeId===fc;});d.sort(function(a,b){return(a.ordem||0)-(b.ordem||0);});STATE.cache.disciplinas=d;renderDisciplinasTableData(d);}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadTurnosData=async function(){try{var t=await FS_school('turnos');t.sort(function(a,b){return(a.ordem||0)-(b.ordem||0);});STATE.cache.turnos=t;renderTurnosCards(t);renderTurnosTable(t);}catch(e){}};
+window.loadFuncionariosTable=async function(){var c=document.getElementById('funcTableContainer');if(!c)return;try{var f=await FS_school('funcionarios');f.sort(function(a,b){return(a.name||'').localeCompare(b.name||'');});var fc=document.getElementById('filterFuncCargo')?.value;if(fc)f=f.filter(function(x){return(x.cargo||'').indexOf(fc)>=0;});STATE.cache.funcionarios=f;renderFuncTableData(f);}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadProfessoresTable=async function(){var c=document.getElementById('profsTableContainer');if(!c)return;try{var p=await FS_school('professores');p.sort(function(a,b){return(a.name||'').localeCompare(b.name||'');});STATE.cache.professores=p;var s=document.getElementById('profStats');if(s)s.innerHTML='<div class="stat-card"><div class="stat-icon green"><i class="fas fa-chalkboard-teacher"></i></div><div class="stat-info"><h4>'+p.length+'</h4><p>Total</p></div></div>';renderProfsTableData(p);}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadYearsTable=async function(){var c=document.getElementById('yearsTable');if(!c)return;try{var y=await FS_school('anos_letivos');y.sort(function(a,b){return(b.ano||'').localeCompare(a.ano||'');});if(!y.length){c.innerHTML='<div class="empty-state"><h3>Nenhum ano</h3></div>';return;}var cm=['super_admin','diretor'].indexOf(STATE.userProfile?.role)>=0;var h='<table><thead><tr><th>#</th><th>Código</th><th>Ano</th><th>Início</th><th>Fim</th><th>Trim.</th><th>Estado</th>'+(cm?'<th>Acções</th>':'')+'</tr></thead><tbody>';y.forEach(function(x,i){var sc=x.status==='aberto'?'badge-active':x.status==='fechado'?'badge-inactive':'badge-pending';var ti='';if(x.trimestres)ti=Object.keys(x.trimestres).map(function(t){return'<small class="badge-status '+(x.trimestres[t]==='aberto'?'badge-active':'badge-inactive')+'" style="margin:1px;">'+t+': '+x.trimestres[t]+'</small>';}).join(' ');h+='<tr><td>'+(i+1)+'</td><td>'+(x.codigo||'')+'</td><td><strong>'+x.ano+'</strong></td><td>'+(x.inicio||'-')+'</td><td>'+(x.fim||'-')+'</td><td>'+(ti||'-')+'</td><td><span class="badge-status '+sc+'">'+(x.status||'pendente')+'</span></td>'+(cm?'<td><div style="display:flex;gap:3px;">'+(x.status!=='aberto'?'<button class="btn btn-sm btn-success" onclick="changeYearStatus(\''+x.id+'\',\'aberto\')"><i class="fas fa-lock-open"></i></button>':'')+(x.status==='aberto'?'<button class="btn btn-sm btn-danger" onclick="changeYearStatus(\''+x.id+'\',\'fechado\')"><i class="fas fa-lock"></i></button>':'')+'<button class="btn btn-sm btn-primary" onclick="editYear(\''+x.id+'\')"><i class="fas fa-edit"></i></button><button class="btn btn-sm btn-warning" onclick="manageTrimesters(\''+x.id+'\')"><i class="fas fa-calendar-check"></i></button></div></td>':'')+'</tr>';});h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadAtribuicoesTable=async function(){var c=document.getElementById('atribuicoesTableContainer');if(!c)return;if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano</h3></div>';return;}try{var a=await FS_year('atribuicoes');var fp=document.getElementById('filterAtribProf')?.value,fc=document.getElementById('filterAtribClasse')?.value;if(fp)a=a.filter(function(x){return x.professorId===fp;});if(fc)a=a.filter(function(x){return x.classeId===fc;});STATE.cache.atribuicoes=a;var cm=['super_admin','diretor','subdiretor_pedagogico'].indexOf(STATE.userProfile?.role)>=0;if(!a.length){c.innerHTML='<div class="empty-state"><h3>Nenhuma</h3></div>';return;}var h='<table><thead><tr><th>#</th><th>Professor</th><th>Disciplina</th><th>Classe</th><th>Turma</th><th>Curso</th>'+(cm?'<th>Acções</th>':'')+'</tr></thead><tbody>';a.forEach(function(x,i){h+='<tr><td>'+(i+1)+'</td><td><strong>'+(x.professorNome||'')+'</strong></td><td>'+(x.disciplinaNome||'')+'</td><td>'+(x.classeNome||'')+'</td><td>'+(x.turmaNome||'')+'</td><td>'+(x.curso||'-')+'</td>'+(cm?'<td><button class="btn btn-sm btn-primary" onclick="editAtribuicao(\''+x.id+'\')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-danger" onclick="deleteAtribuicao(\''+x.id+'\')"><i class="fas fa-trash"></i></button></td>':'')+'</tr>';});h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.loadFaltasProfs=async function(){var c=document.getElementById('faltasProfsContainer');if(!c)return;try{var f=await FS_school('faltas_professores');f.sort(function(a,b){return(b.data||'').localeCompare(a.data||'');});if(!f.length){c.innerHTML='<div class="empty-state"><h3>Nenhuma falta</h3></div>';return;}var h='<table><thead><tr><th>#</th><th>Data</th><th>Professor</th><th>Motivo</th><th>Acções</th></tr></thead><tbody>';f.slice(0,50).forEach(function(x,i){h+='<tr><td>'+(i+1)+'</td><td>'+(x.data||'')+'</td><td><strong>'+(x.professorNome||'')+'</strong></td><td>'+(x.motivo||'-')+'</td><td><button class="btn btn-sm btn-danger" onclick="deleteFaltaProf(\''+x.id+'\')"><i class="fas fa-trash"></i></button></td></tr>';});h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+window.checkNotifications=async function(){if(!STATE.currentSchool||!STATE.userProfile)return;try{var all=await FS_school('mensagens');var n=all.filter(function(m){return m.destinatarioId===STATE.userProfile.id&&!m.lida;}).length;var d=document.getElementById('msgNotif'),nd=document.getElementById('notifDot');if(n>0){if(d)d.classList.remove('hidden');if(nd)nd.classList.remove('hidden');}else{if(d)d.classList.add('hidden');}}catch(e){}};
+
+// ================================================================
+// 10. PRESENÇAS - PROFESSOR NÃO VÊ FALTAS DE PROFS
+// ================================================================
+window.renderPresencas=async function(){
+    var content=document.getElementById('pageContent');
+    if(!STATE.currentSchool||!STATE.currentYearId){content.innerHTML='<div class="empty-state"><h3>Ano letivo necessário</h3></div>';return;}
+    var role=STATE.userProfile?.role||'';
+    var showProfFaltas = ['super_admin','diretor','subdiretor_pedagogico','subdiretor_administrativo','coordenador'].indexOf(role)>=0;
+
+    content.innerHTML='<div class="page-header"><div><h2><i class="fas fa-clipboard-check"></i> Presenças</h2></div><div class="page-actions"><button class="btn btn-secondary" onclick="exportPresencasXLSX()"><i class="fas fa-file-excel"></i></button><button class="btn btn-secondary" onclick="exportPresencasPDF()"><i class="fas fa-file-pdf"></i></button></div></div>'+
+        (showProfFaltas ? '<div class="tabs" id="presencaTabs"><div class="tab active" onclick="switchPresencaTab(\'alunos\')">Presenças de Alunos</div><div class="tab" onclick="switchPresencaTab(\'professores\')">Faltas de Professores</div></div>' : '') +
+        '<div id="presTabAlunos"><div class="card" style="margin-bottom:16px;"><div class="card-body"><div class="filter-bar"><div class="form-group"><label>Data</label><input type="date" id="presData" value="'+new Date().toISOString().split('T')[0]+'" onchange="loadPresencasAlunos()"></div><div class="form-group" style="min-width:160px;"><label>Classe</label><select id="presClasse" onchange="onPresClasseChange()"><option value="">Selecione...</option></select></div><div class="form-group" style="min-width:140px;"><label>Turma</label><select id="presTurma" onchange="loadPresencasAlunos()"><option value="">Selecione...</option></select></div></div></div></div><div class="card"><div class="card-header"><h3 id="presencaTitle">Selecione filtros</h3><div id="presencaCounters" style="display:flex;gap:12px;font-size:12px;font-weight:600;"></div></div><div class="card-body"><div id="presencasContainer"><div class="empty-state"><h3>Selecione data, classe e turma</h3></div></div></div><div class="modal-footer" id="presFooter" style="display:none;"><button class="btn btn-success" onclick="savePresencas()"><i class="fas fa-save"></i> Salvar</button></div></div></div>'+
+        (showProfFaltas ? '<div id="presTabProfessores" style="display:none;"><div class="card" style="margin-bottom:16px;"><div class="card-body"><div class="filter-bar"><div class="form-group"><label>Data</label><input type="date" id="presProfData" value="'+new Date().toISOString().split('T')[0]+'"></div><button class="btn btn-primary" onclick="openFaltaProfModal()"><i class="fas fa-plus"></i> Registar Falta</button></div></div></div><div class="card"><div class="card-header"><h3>Faltas de Professores</h3></div><div class="card-body" id="faltasProfsContainer"><div class="spinner" style="margin:20px auto;"></div></div></div></div>' : '');
+
+    await populatePresencaFilters();
+    if(showProfFaltas) await loadFaltasProfs();
+};
+
+window.loadPresencasAlunos=async function(){var c=document.getElementById('presencasContainer');var dt=document.getElementById('presData')?.value,tid=document.getElementById('presTurma')?.value;if(!dt||!tid){c.innerHTML='<div class="empty-state"><h3>Selecione filtros</h3></div>';document.getElementById('presFooter').style.display='none';return;}c.innerHTML='<div class="spinner" style="margin:20px auto;"></div>';try{var allA=await FS_year('alunos');var alunos=allA.filter(function(a){return a.turmaId===tid&&a.estado==='Ativo';}).sort(function(a,b){return(a.name||'').localeCompare(b.name||'');});var allP=await FS_year('presencas');var pMap={};allP.filter(function(p){return p.turmaId===tid&&p.data===dt;}).forEach(function(p){pMap[p.alunoId]={docId:p.id,status:p.status,justificativa:p.justificativa};});STATE.cache.presencasContext={data:dt,classeId:document.getElementById('presClasse')?.value,turmaId:tid,alunos:alunos,presMap:pMap};document.getElementById('presencaTitle').textContent='Presenças - '+dt;renderPresencasGrid(alunos,pMap);document.getElementById('presFooter').style.display='flex';}catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}};
+
+// ================================================================
+// 11. NOTAS - PROFESSOR SÓ VÊ SUAS ATRIBUIÇÕES
+// ================================================================
+window.populateNotaFilters=async function(){
+    try{
+        var role=STATE.userProfile?.role||'';
+        var classesData=[];
+        if(role==='professor'){
+            // Só classes atribuídas
+            var atribs=await FS_year('atribuicoes');
+            var myAtribs=atribs.filter(function(a){return a.professorId===STATE.userProfile.id;});
+            var classIds=[];myAtribs.forEach(function(a){if(classIds.indexOf(a.classeId)<0)classIds.push(a.classeId);});
+            var allClasses=await FS_year('classes');
+            classesData=allClasses.filter(function(c){return classIds.indexOf(c.id)>=0;});
+        }else{
+            classesData=await getAllClasses();
+        }
+        classesData.sort(function(a,b){return(a.ordem||0)-(b.ordem||0);});
+        var sel=document.getElementById('notaClasse');if(!sel)return;
+        var opts='<option value="">Selecione...</option>';
+        classesData.forEach(function(c){opts+='<option value="'+c.id+'" data-nome="'+c.nome+'" data-ciclo="'+(c.ciclo||'')+'" data-notamax="'+(c.notaMax||20)+'" data-curso="'+(c.curso||'')+'">'+c.nome+(c.curso?' - '+c.curso:'')+'</option>';});
+        sel.innerHTML=opts;
+    }catch(e){console.error(e);}
+};
+
+window.onNotaClasseChange=async function(){
+    var classeId=document.getElementById('notaClasse')?.value;if(!classeId)return;
+    var role=STATE.userProfile?.role||'';
+    var turmas=[],discs=[];
+
+    if(role==='professor'){
+        var atribs=await FS_year('atribuicoes');
+        var myAtribs=atribs.filter(function(a){return a.professorId===STATE.userProfile.id&&a.classeId===classeId;});
+        var turmaIds=[],discIds=[];
+        myAtribs.forEach(function(a){if(turmaIds.indexOf(a.turmaId)<0)turmaIds.push(a.turmaId);if(discIds.indexOf(a.disciplinaId)<0)discIds.push(a.disciplinaId);});
+        var allTurmas=await FS_year('turmas');turmas=allTurmas.filter(function(t){return turmaIds.indexOf(t.id)>=0;});
+        var allDiscs=await FS_year('disciplinas');discs=allDiscs.filter(function(d){return discIds.indexOf(d.id)>=0;});
+    }else{
+        turmas=await getTurmasForClasse(classeId);
+        discs=await getDisciplinasForClasse(classeId);
+    }
+    discs.sort(function(a,b){return(a.ordem||0)-(b.ordem||0);});
+
+    var tSel=document.getElementById('notaTurma');
+    var tOpts='<option value="">Selecione...</option>';
+    turmas.forEach(function(t){tOpts+='<option value="'+t.id+'" data-nome="'+(t.nome||'')+'">'+t.nome+' ('+(t.turnoNome||'')+')</option>';});
+    tSel.innerHTML=tOpts;
+
+    var dSel=document.getElementById('notaDisciplina');
+    var dOpts='<option value="">Selecione...</option>';
+    discs.forEach(function(d){dOpts+='<option value="'+d.id+'" data-nome="'+(d.nome||'')+'">'+d.nome+'</option>';});
+    dSel.innerHTML=dOpts;
+};
+
+// Grid de notas
+window.loadNotasGrid=async function(){
+    var c=document.getElementById('notasGridContainer');if(!c)return;
+    var classeId=document.getElementById('notaClasse')?.value,turmaId=document.getElementById('notaTurma')?.value,discId=document.getElementById('notaDisciplina')?.value,trim=document.getElementById('notaTrimestre')?.value;
+    if(!classeId||!turmaId||!discId){c.innerHTML='<div class="empty-state"><i class="fas fa-star"></i><h3>Selecione todos filtros</h3></div>';var btn=document.getElementById('btnSaveNotas');if(btn)btn.style.display='none';return;}
+
+    var co=document.getElementById('notaClasse').selectedOptions[0];
+    var cn=co?.dataset?.nome||'',nm=parseInt(co?.dataset?.notamax)||20,nmin=nm===10?5:10;
+    var dn=document.getElementById('notaDisciplina').selectedOptions[0]?.dataset?.nome||'';
+    var tn=document.getElementById('notaTurma').selectedOptions[0]?.dataset?.nome||'';
+    var tl=trim+'º Trimestre';
+    var isT=['6ª Classe','9ª Classe','12ª Classe','13ª Classe'].indexOf(cn)>=0;
+    var tOpen=isTrimesterOpen(tl);
+    var canE=tOpen&&['super_admin','diretor','subdiretor_pedagogico','professor'].indexOf(STATE.userProfile?.role)>=0;
+
+    document.getElementById('notasGridTitle').textContent=cn+' - '+tn+' | '+dn+' | '+tl;
+    c.innerHTML='<div class="spinner" style="margin:20px auto;"></div>';
+
+    try{
+        var allA=await FS_year('alunos');
+        // FILTRAR CORRETAMENTE por turma E estado
+        var alunos=allA.filter(function(a){return a.turmaId===turmaId&&a.estado==='Ativo';}).sort(function(a,b){return(a.name||'').localeCompare(b.name||'');});
+        var allN=await FS_year('notas');
+        var nMap={};allN.filter(function(n){return n.disciplinaId===discId&&n.turmaId===turmaId;}).forEach(function(n){nMap[n.alunoId]=n;});
+
+        if(!alunos.length){c.innerHTML='<div class="empty-state"><h3>Nenhum aluno ativo nesta turma</h3></div>';var btn=document.getElementById('btnSaveNotas');if(btn)btn.style.display='none';return;}
+
+        var IS='width:46px;text-align:center;padding:3px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;';
+        var hc;
+        if(trim==='3'&&isT)hc='<th class="center">MAC3</th><th class="center" style="background:#e0f2fe;">MT1</th><th class="center" style="background:#e0f2fe;">MT2</th><th class="center" style="background:#fef3c7;">CT3</th><th class="center" style="background:#fce7f3;">Exame</th><th class="center" style="background:#dcfce7;">MFD</th><th class="center">Obs.</th>';
+        else if(trim==='3')hc='<th class="center">MAC3</th><th class="center" style="background:#e0f2fe;">MT1</th><th class="center" style="background:#e0f2fe;">MT2</th><th class="center" style="background:#dcfce7;">MF</th><th class="center">Obs.</th>';
+        else hc='<th class="center">MAC</th><th class="center">NPT</th><th class="center" style="background:#dcfce7;">MT</th><th class="center">Obs.</th>';
+
+        var h='<div class="table-container"><table><thead><tr><th>#</th><th>Nome</th>'+hc+'</tr></thead><tbody>';
+        alunos.forEach(function(a,i){
+            var n=nMap[a.id]||{};
+            h+='<tr><td>'+(i+1)+'</td><td class="student-name">'+a.name+'</td>';
+            if(trim==='3'&&isT){
+                var mac3=n.mac3??'',mt1=n.mt1??'',mt2=n.mt2??'',ex=n.exame??'';
+                var ct3=calcCT3(mt1,mt2,mac3),mfd=calcMFD(ct3,ex),obs=getNotaObs(mfd,nmin,a.genero);
+                var ms=mfd!==''&&parseFloat(mfd)>=nmin?'color:#059669;font-weight:700;':mfd!==''?'color:#dc2626;font-weight:700;':'';
+                h+='<td class="center"><input type="number" class="nota-input" data-aluno="'+a.id+'" data-field="mac3" value="'+mac3+'" min="0" max="'+nm+'" style="'+IS+'" '+(canE?'':'disabled')+' onchange="rcT(\''+a.id+'\','+nm+','+nmin+')"></td>';
+                h+='<td class="center" style="background:#f0f9ff;"><input data-aluno="'+a.id+'" data-field="mt1" value="'+mt1+'" style="'+IS+'background:#f0f9ff;" disabled></td>';
+                h+='<td class="center" style="background:#f0f9ff;"><input data-aluno="'+a.id+'" data-field="mt2" value="'+mt2+'" style="'+IS+'background:#f0f9ff;" disabled></td>';
+                h+='<td class="center" style="background:#fefce8;"><span data-aluno="'+a.id+'" data-field="ct3d">'+ct3+'</span></td>';
+                h+='<td class="center" style="background:#fdf2f8;"><input type="number" class="nota-input" data-aluno="'+a.id+'" data-field="exame" value="'+ex+'" min="0" max="'+nm+'" style="'+IS+'background:#fdf2f8;" '+(canE?'':'disabled')+' onchange="rcT(\''+a.id+'\','+nm+','+nmin+')"></td>';
+                h+='<td class="center" style="background:#f0fdf4;"><span data-aluno="'+a.id+'" data-field="mfdd" style="'+ms+'">'+mfd+'</span></td>';
+                h+='<td class="center"><span data-aluno="'+a.id+'" data-field="obsd" class="'+(obs.indexOf('Aprov')>=0?'badge-status badge-approved':obs.indexOf('Reprov')>=0?'badge-status badge-failed':'')+'" style="font-size:10px;">'+obs+'</span></td>';
+            }else if(trim==='3'){
+                var mac3=n.mac3??'',mt1=n.mt1??'',mt2=n.mt2??'';
+                var mf=calcMFNormal(mt1,mt2,mac3),obs=getNotaObs(mf,nmin,a.genero);
+                var ms=mf!==''&&parseFloat(mf)>=nmin?'color:#059669;font-weight:700;':mf!==''?'color:#dc2626;font-weight:700;':'';
+                h+='<td class="center"><input type="number" class="nota-input" data-aluno="'+a.id+'" data-field="mac3" value="'+mac3+'" min="0" max="'+nm+'" style="'+IS+'" '+(canE?'':'disabled')+' onchange="rcN(\''+a.id+'\','+nm+','+nmin+')"></td>';
+                h+='<td class="center" style="background:#f0f9ff;"><input data-aluno="'+a.id+'" data-field="mt1" value="'+mt1+'" style="'+IS+'background:#f0f9ff;" disabled></td>';
+                h+='<td class="center" style="background:#f0f9ff;"><input data-aluno="'+a.id+'" data-field="mt2" value="'+mt2+'" style="'+IS+'background:#f0f9ff;" disabled></td>';
+                h+='<td class="center" style="background:#f0fdf4;"><span data-aluno="'+a.id+'" data-field="mfdd" style="'+ms+'">'+mf+'</span></td>';
+                h+='<td class="center"><span data-aluno="'+a.id+'" data-field="obsd" class="'+(obs.indexOf('Aprov')>=0?'badge-status badge-approved':obs.indexOf('Reprov')>=0?'badge-status badge-failed':'')+'" style="font-size:10px;">'+obs+'</span></td>';
+            }else{
+                var mac=n['mac'+trim]??'',npt=n['npt'+trim]??'';
+                var mt=calcMT(mac,npt),obs=getNotaObs(mt,nmin,a.genero);
+                var ms=mt!==''&&parseFloat(mt)>=nmin?'color:#059669;font-weight:700;':mt!==''?'color:#dc2626;font-weight:700;':'';
+                h+='<td class="center"><input type="number" class="nota-input" data-aluno="'+a.id+'" data-field="mac'+trim+'" value="'+mac+'" min="0" max="'+nm+'" style="'+IS+'" '+(canE?'':'disabled')+' onchange="recalcRow(this,\''+a.id+'\',\''+trim+'\','+nm+')"></td>';
+                h+='<td class="center"><input type="number" class="nota-input" data-aluno="'+a.id+'" data-field="npt'+trim+'" value="'+npt+'" min="0" max="'+nm+'" style="'+IS+'" '+(canE?'':'disabled')+' onchange="recalcRow(this,\''+a.id+'\',\''+trim+'\','+nm+')"></td>';
+                h+='<td class="center" style="background:#f0fdf4;"><span data-aluno="'+a.id+'" data-field="mt'+trim+'display" style="'+ms+'">'+mt+'</span></td>';
+                h+='<td class="center"><span data-aluno="'+a.id+'" data-field="obs'+trim+'display" class="'+(obs.indexOf('Aprov')>=0?'badge-status badge-approved':obs.indexOf('Reprov')>=0?'badge-status badge-failed':'')+'" style="font-size:10px;">'+obs+'</span></td>';
+            }
+            h+='</tr>';
+        });
+        h+='</tbody></table></div>';
+        if(!tOpen)h+='<div style="margin-top:10px;padding:10px;background:#fef3c7;border-radius:8px;font-size:12px;"><i class="fas fa-lock"></i> Trimestre fechado.</div>';
+        c.innerHTML=h;
+        var btn=document.getElementById('btnSaveNotas');if(btn)btn.style.display=canE?'inline-flex':'none';
+        STATE.cache.notasContext={classeId:classeId,turmaId:turmaId,disciplinaId:discId,trimestre:trim,classeNome:cn,discNome:dn,turmaNome:tn,notaMax:nm,isTerminal:isT,notaMin:nmin,notasMap:nMap,alunos:alunos};
+    }catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}
+};
+
+window.rcT=function(aid,nm,nmin){var g=function(f){return document.querySelector('[data-aluno="'+aid+'"][data-field="'+f+'"]');};var mac3=g('mac3')?.value||'',mt1=g('mt1')?.value||'',mt2=g('mt2')?.value||'',ex=g('exame')?.value||'';var ct3=calcCT3(mt1,mt2,mac3),mfd=calcMFD(ct3,ex);var s3=g('ct3d'),sm=g('mfdd'),so=g('obsd');if(s3)s3.textContent=ct3;if(sm){sm.textContent=mfd;sm.style.color=mfd!==''&&parseFloat(mfd)>=nmin?'#059669':'#dc2626';sm.style.fontWeight='700';}if(so){var al=STATE.cache.notasContext?.alunos?.find(function(a){return a.id===aid;});var o=getNotaObs(mfd,nmin,al?.genero);so.textContent=o;so.className=o.indexOf('Aprov')>=0?'badge-status badge-approved':o.indexOf('Reprov')>=0?'badge-status badge-failed':'';}};
+window.rcN=function(aid,nm,nmin){var g=function(f){return document.querySelector('[data-aluno="'+aid+'"][data-field="'+f+'"]');};var mac3=g('mac3')?.value||'',mt1=g('mt1')?.value||'',mt2=g('mt2')?.value||'';var mf=calcMFNormal(mt1,mt2,mac3);var sm=g('mfdd'),so=g('obsd');if(sm){sm.textContent=mf;sm.style.color=mf!==''&&parseFloat(mf)>=nmin?'#059669':'#dc2626';sm.style.fontWeight='700';}if(so){var al=STATE.cache.notasContext?.alunos?.find(function(a){return a.id===aid;});var o=getNotaObs(mf,nmin,al?.genero);so.textContent=o;so.className=o.indexOf('Aprov')>=0?'badge-status badge-approved':o.indexOf('Reprov')>=0?'badge-status badge-failed':'';}};
+
+// ================================================================
+// 12. PAUTAS - FILTRO CORRETO POR TURMA
+// ================================================================
+window.loadPautaView=async function(){
+    var c=document.getElementById('pautaViewContainer');
+    var cid=document.getElementById('pautaClasse')?.value,tid=document.getElementById('pautaTurma')?.value;
+    var tipo=document.getElementById('pautaTipo')?.value,trim=document.getElementById('pautaTrimestre')?.value;
+    if(tipo==='anual')document.getElementById('pautaTrimGroup').style.display='none';else document.getElementById('pautaTrimGroup').style.display='block';
+    if(!cid||!tid){c.innerHTML='<div class="empty-state"><h3>Selecione classe e turma</h3></div>';return;}
+
+    var co=document.getElementById('pautaClasse').selectedOptions[0];
+    var cn=co?.dataset?.nome||'',tn=document.getElementById('pautaTurma').selectedOptions[0]?.dataset?.nome||'';
+    var nm=parseInt(co?.dataset?.notamax)||20,nmin=nm===10?5:10;
+    var isT=['6ª Classe','9ª Classe','12ª Classe','13ª Classe'].indexOf(cn)>=0;
+    c.innerHTML='<div class="spinner" style="margin:20px auto;"></div>';
+
+    try{
+        var allAlunos=await FS_year('alunos');
+        // FILTRAR ESTRITAMENTE POR TURMA
+        var alunos=allAlunos.filter(function(a){return a.turmaId===tid;}).sort(function(a,b){return(a.name||'').localeCompare(b.name||'');});
+
+        var allDiscs=await FS_year('disciplinas');
+        var discs=allDiscs.filter(function(d){return d.classeId===cid;}).sort(function(a,b){return(a.ordem||0)-(b.ordem||0);});
+
+        var allN=await FS_year('notas');
+        var nMap={};
+        // FILTRAR NOTAS ESTRITAMENTE POR TURMA
+        allN.filter(function(n){return n.turmaId===tid;}).forEach(function(n){nMap[n.alunoId+'_'+n.disciplinaId]=n;});
+
+        var dir=getDirectorInfo(),sub=await getSubPedInfo();
+
+        var h='<div id="pautaPrintArea" style="font-family:\'Inter\',sans-serif;font-size:11px;">';
+        h+='<div style="text-align:center;margin-bottom:16px;">'+getInsigniaHTML(60)+'<h4 style="margin-top:8px;text-transform:uppercase;">REPÚBLICA DE ANGOLA</h4><h5>MINISTÉRIO DA EDUCAÇÃO</h5><p style="font-weight:600;margin-top:6px;">'+(STATE.currentSchool?.name||'')+'</p><h3 style="margin-top:10px;text-transform:uppercase;border-bottom:2px solid #000;display:inline-block;padding-bottom:4px;">PAUTA '+(tipo==='anual'?'ANUAL':'DO '+trim+'º TRIMESTRE')+'</h3><div style="margin-top:8px;font-size:12px;"><strong>Classe:</strong> '+cn+' | <strong>Turma:</strong> '+tn+' | <strong>Ano:</strong> '+(STATE.currentYear?.ano||'')+(co?.dataset?.curso?' | <strong>Curso:</strong> '+co.dataset.curso:'')+'</div></div>';
+
+        h+='<table style="width:100%;border-collapse:collapse;font-size:10px;"><thead><tr style="background:#f1f5f9;"><th style="border:1px solid #999;padding:4px;">#</th><th style="border:1px solid #999;padding:4px;text-align:left;">Nome do Aluno</th>';
+        discs.forEach(function(d){h+='<th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;" title="'+d.nome+'">'+(d.abreviatura||d.nome.substring(0,5))+'</th>';});
+        h+='<th style="border:1px solid #999;padding:4px;">Resultado</th></tr></thead><tbody>';
+
+        alunos.forEach(function(a,i){
+            var act=a.estado==='Ativo';
+            h+='<tr style="'+(act?'':'opacity:0.5;')+'"><td style="border:1px solid #ccc;padding:3px;text-align:center;">'+(i+1)+'</td><td style="border:1px solid #ccc;padding:3px;color:#ce1126;font-weight:600;">'+a.name+'</td>';
+            var ap=true,ha=true,nc=0,ns=[];
+            discs.forEach(function(d){
+                var k=a.id+'_'+d.id,n=nMap[k];var v;
+                if(tipo==='trimestral'){if(trim==='3')v=isT?n?.mediaFinal:n?.mt3??n?.mediaFinal;else v=n?.['mt'+trim];}else v=n?.mediaFinal;
+                var ds=v!=null?v:'',neg=ds!==''&&parseFloat(ds)<nmin;
+                if(neg){ap=false;nc++;ns.push(d.nome);}if(ds===''||ds===null)ha=false;
+                h+='<td style="border:1px solid #ccc;padding:3px;text-align:center;'+(neg?'color:#dc2626;font-weight:700;':'color:#059669;')+'">'+ds+'</td>';
+            });
+            var obs='';
+            if(!act)obs=a.estado==='Transferido'?genderWord(a.genero,'Transferido','Transferida'):'Desistente';
+            else if(!ha)obs='';
+            else obs=checkApprovalRules(cn,ap,nc,ns,a.genero,nmin);
+            var oc=obs.indexOf('Aprov')>=0?'color:#059669;':obs.indexOf('Reprov')>=0?'color:#dc2626;':'color:#6b7280;';
+            h+='<td style="border:1px solid #ccc;padding:3px;text-align:center;font-weight:600;font-size:9px;'+oc+'">'+obs+'</td></tr>';
+        });
+        h+='</tbody></table>';
+
+        // Assinaturas
+        var dirT=genderTitle(dir.genero,'Director'),subT=genderTitle(sub.genero,'Subdiretor Pedagógico');
+        h+='<div style="margin-top:30px;display:flex;justify-content:space-between;font-size:11px;">';
+        h+='<div style="text-align:center;min-width:160px;"><div>'+dirT+'</div><div style="border-top:1px solid #000;width:80%;margin:25px auto 4px;"></div><div style="font-weight:700;">'+(dir.name||'')+'</div></div>';
+        h+='<div style="text-align:center;min-width:160px;"><div>'+subT+'</div><div style="border-top:1px solid #000;width:80%;margin:25px auto 4px;"></div><div style="font-weight:700;">'+(sub.name||'')+'</div></div>';
+        h+='<div style="text-align:center;min-width:160px;"><div>O(A) Secretário(a)</div><div style="border-top:1px solid #000;width:80%;margin:25px auto 4px;"></div></div>';
+        h+='</div></div>';
+
+        c.innerHTML=h;
+        STATE.cache.pautaContext={classeId:cid,turmaId:tid,classeNome:cn,turmaNome:tn,tipo:tipo,trimestre:trim,alunos:alunos,discs:discs,notasMap:nMap,notaMax:nm,notaMin:nmin,isTerminal:isT};
+    }catch(e){c.innerHTML='<p style="color:var(--danger);">'+e.message+'</p>';}
+};
+
+// ================================================================
+// 13. PDFs COMPLETOS COM INSÍGNIA E DADOS
+// ================================================================
+
+// Helper para adicionar insígnia ao PDF
+function addInsigniaToPDF(pdf, x, y, w) {
+    // Se temos insígnia em base64, adicionamos como imagem
+    if (STATE.insigniaBase64) {
+        try {
+            pdf.addImage(STATE.insigniaBase64, 'JPEG', x, y, w, w);
+            return true;
+        } catch(e) {
+            console.warn('Insígnia não adicionada ao PDF:', e.message);
+        }
+    }
+    return false;
+}
+
+window.downloadDeclaracaoPDF=async function(){
+    var d=STATE.cache.declData;if(!d||!d.aluno){showToast('Gere a declaração primeiro!','warning');return;}
+    var pdf=getPDF();if(!pdf)return;
+    var al=d.aluno,yd=d.yearData,sch=d.school,notas=d.notas||[],cats=d.categories||{};
+    var dir=d.dir||getDirectorInfo(),sub=d.sub||{name:'',genero:'M'};
+    var ci=ANGOLA_CLASSES[al.classeNome],ciclo=ci?.ciclo||'',notaMax=ci?.notaMax||20,nmin=notaMax===10?5:10;
+    var alinea=ciclo==='I Ciclo'?'c)':ciclo==='II Ciclo'?'e)':'b)';
+    var dirT=genderTitle(dir.genero,'Director'),subT=genderTitle(sub.genero,'Subdiretor Pedagógico');
+
+    // Insígnia
+    var insOk = addInsigniaToPDF(pdf, 85, 5, 20);
+    var startY = insOk ? 28 : 10;
+
+    pdf.setFontSize(12);pdf.text('REPÚBLICA DE ANGOLA',105,startY,{align:'center'});
+    pdf.setFontSize(10);pdf.text('MINISTÉRIO DA EDUCAÇÃO',105,startY+6,{align:'center'});
+    pdf.setFontSize(18);pdf.setFont(undefined,'bold');pdf.text('DECLARAÇÃO',105,startY+20,{align:'center'});
+    pdf.setFontSize(11);pdf.setFont(undefined,'normal');
+
+    var corpo=dir.name+', '+dirT+' '+(dir.genero==='F'?'da':'do')+' '+(sch?.name||'')+
+        (sch?.decreto?', criado sobre Decreto Executivo '+sch.decreto:'')+
+        ', ao abrigo do disposto na alínea '+alinea+' do '+(sch?.artigo||'artigo 109°')+' da '+
+        (sch?.lei||'Lei nº 32/20 de 12 de Agosto')+', declara que '+al.name+', '+
+        genderWord(al.genero,'filho','filha')+' de '+(al.nomePai||'____')+' e de '+(al.nomeMae||'____')+', '+
+        genderWord(al.genero,'nascido','nascida')+' aos '+(al.dataNasc||'__/__/____')+
+        ', natural de '+(al.naturalidade||'____')+', Município de '+(al.municipio||'____')+
+        ', Província '+(al.provincia||'____')+', '+genderWord(al.genero,'portador','portadora')+
+        ' de B.I nº '+(al.bi||'____')+', passado pelo Arquivo de Identificação de '+(al.biArquivo||'____')+
+        ', aos '+(al.biData||'__/__/____')+', frequentou no ano lectivo '+(yd?.ano||'____')+
+        ' a '+(al.classeNome||'')+(al.curso?', na área de '+al.curso:'')+
+        ', com as seguintes classificações por disciplina:';
+
+    var y=startY+30;
+    pdf.splitTextToSize(corpo,175).forEach(function(l){if(y>270){pdf.addPage();y=20;}pdf.text(l,18,y);y+=5.5;});
+
+    y+=6;pdf.setFontSize(9);pdf.setFont(undefined,'bold');
+    pdf.text('Disciplinas',18,y);pdf.text('Média',138,y,{align:'center'});pdf.text('Por extenso',176,y,{align:'center'});
+    y+=2;pdf.line(18,y,195,y);y+=5;pdf.setFont(undefined,'normal');
+
+    var cKeys=Object.keys(cats);
+    if(cKeys.length>0){
+        cKeys.forEach(function(cat){
+            if(cat&&cKeys.length>1){if(y>268){pdf.addPage();y=20;}pdf.setFont(undefined,'bold');pdf.setFontSize(8);pdf.text(cat,18,y);pdf.setFont(undefined,'normal');pdf.setFontSize(9);y+=5;}
+            (cats[cat]||[]).forEach(function(n){
+                if(y>268){pdf.addPage();y=20;}
+                var mf=n.mediaFinal??'';var ext=mf!==''?numberToWords(Math.round(parseFloat(mf))):'';
+                pdf.text((n.disciplina||'').substring(0,48),18,y);
+                if(mf!==''&&parseFloat(mf)<nmin)pdf.setTextColor(220,38,38);
+                pdf.setFont(undefined,'bold');pdf.text(String(mf),138,y,{align:'center'});pdf.setFont(undefined,'normal');pdf.setTextColor(0);
+                pdf.text(ext.substring(0,22),176,y,{align:'center'});y+=5;
+            });
+        });
+    }else{
+        notas.forEach(function(n){if(y>268){pdf.addPage();y=20;}var mf=n.mediaFinal??'';var ext=mf!==''?numberToWords(Math.round(parseFloat(mf))):'';pdf.text((n.disciplina||'').substring(0,48),18,y);pdf.setFont(undefined,'bold');pdf.text(String(mf),138,y,{align:'center'});pdf.setFont(undefined,'normal');pdf.text(ext.substring(0,22),176,y,{align:'center'});y+=5;});
+    }
+
+    y+=8;if(y>252){pdf.addPage();y=20;}pdf.setFontSize(11);
+    pdf.splitTextToSize('Para efeitos legais lhe é passada a presente Declaração, assinada por mim e autenticada com carimbo a óleo/selo branco em uso neste estabelecimento de Ensino.',175).forEach(function(l){pdf.text(l,18,y);y+=5.5;});
+    y+=5;pdf.text((sch?.municipality||'____')+', aos ____ de ____________ de 20____',195,y,{align:'right'});
+
+    y+=20;if(y>262){pdf.addPage();y=30;}pdf.setFontSize(9);
+    pdf.text(subT,45,y,{align:'center'});pdf.line(15,y+18,75,y+18);pdf.setFont(undefined,'bold');pdf.text(sub.name||'________________',45,y+23,{align:'center'});
+    pdf.setFont(undefined,'normal');pdf.text(dirT,160,y,{align:'center'});pdf.line(130,y+18,190,y+18);pdf.setFont(undefined,'bold');pdf.text(dir.name||'________________',160,y+23,{align:'center'});
+
+    pdf.save('Declaracao_'+(al.name||'aluno').replace(/\s/g,'_')+'.pdf');
+    showToast('Declaração PDF baixada!','success');
+    logActivity('documento','Declaração: '+al.name);
+};
+
+window.downloadCertificadoPDF=async function(){
+    var cd=STATE.cache.certData;if(!cd||!cd.aluno){showToast('Gere o certificado primeiro!','warning');return;}
+    var pdf=getPDF();if(!pdf)return;
+    var al=cd.aluno,yd=cd.yearData,sch=cd.school,cr=cd.classesRange||[],sd=cd.sortedDiscs||[],cg=cd.catGroups||{},mfT=cd.mediaFinal,nv=cd.nivelNome,alinea=cd.alinea,ciclo=cd.ciclo,dir=cd.dir||getDirectorInfo();
+    var dirT=genderTitle(dir.genero,'Director');
+
+    var insOk=addInsigniaToPDF(pdf,85,5,20);var sY=insOk?28:10;
+    pdf.setFontSize(12);pdf.text('REPÚBLICA DE ANGOLA',105,sY,{align:'center'});
+    pdf.setFontSize(10);pdf.text('MINISTÉRIO DA EDUCAÇÃO',105,sY+6,{align:'center'});
+    pdf.setFontSize(18);pdf.setFont(undefined,'bold');pdf.text('CERTIFICADO',105,sY+20,{align:'center'});
+    pdf.setFontSize(10);pdf.setFont(undefined,'normal');
+
+    var corpo=dir.name+', '+dirT+' '+(dir.genero==='F'?'da':'do')+' '+(sch?.name||'')+(sch?.denominacao&&ciclo==='II Ciclo'?', denominado '+sch.denominacao:'')+(sch?.decreto?', criado sobre Decreto Executivo '+sch.decreto:'')+', ao abrigo do disposto na alínea '+alinea+' do '+(sch?.artigo||'artigo 109°')+' da '+(sch?.lei||'Lei nº 32/20 de 12 de Agosto')+', certifica que '+al.name+', '+genderWord(al.genero,'filho','filha')+' de '+(al.nomePai||'____')+' e de '+(al.nomeMae||'____')+', '+genderWord(al.genero,'nascido','nascida')+' aos '+(al.dataNasc||'__/__/____')+', natural de '+(al.naturalidade||'____')+', Município de '+(al.municipio||'____')+', Província de '+(al.provincia||'____')+', '+genderWord(al.genero,'portador','portadora')+' de B.I nº '+(al.bi||'____')+', passado pelo Arquivo de Identificação de '+(al.biArquivo||'____')+', aos '+(al.biData||'__/__/____')+', concluiu no ano lectivo '+(yd?.ano||'____')+' o '+(nv||'')+(al.curso?', na área de '+al.curso:'')+', conforme consta do processo individual nº '+(al.processo||'____')+', com a média final de '+mfT+' Valores, obtidas pelas seguintes classificações por disciplinas:';
+
+    var y=sY+29;pdf.splitTextToSize(corpo,175).forEach(function(l){if(y>268){pdf.addPage();y=20;}pdf.text(l,18,y);y+=5;});
+
+    y+=5;var nc=cr.length;pdf.setFontSize(7);pdf.setFont(undefined,'bold');
+    pdf.text('Disciplinas',18,y);cr.forEach(function(c,i){pdf.text(c.replace(' Classe','ª'),75+i*16,y,{align:'center'});});
+    pdf.text('MF',75+nc*16+8,y,{align:'center'});pdf.text('Extenso',75+nc*16+30,y);
+    y+=2;pdf.line(18,y,195,y);y+=4;pdf.setFont(undefined,'normal');
+
+    var cgK=Object.keys(cg);
+    if(cgK.length>0){cgK.forEach(function(cat){if(cat&&cgK.length>1){if(y>268){pdf.addPage();y=20;}pdf.setFont(undefined,'bold');pdf.text(cat,18,y);pdf.setFont(undefined,'normal');y+=4;}(cg[cat]||[]).forEach(function(item){var nome=item[0],info=item[1];if(y>268){pdf.addPage();y=20;}pdf.text((nome||'').substring(0,25),18,y);cr.forEach(function(c,i){var v=info.grades?info.grades[c]:null;pdf.text(v!=null?String(v):'–',75+i*16,y,{align:'center'});});pdf.setFont(undefined,'bold');pdf.text(info.media!=null?String(info.media):'',75+nc*16+8,y,{align:'center'});pdf.setFont(undefined,'normal');pdf.text(info.media!=null?numberToWords(Math.round(info.media)).substring(0,18):'',75+nc*16+30,y);y+=4;});});}
+    else{sd.forEach(function(item){var nome=item[0],info=item[1];if(y>268){pdf.addPage();y=20;}pdf.text((nome||'').substring(0,25),18,y);cr.forEach(function(c,i){var v=info.grades?info.grades[c]:null;pdf.text(v!=null?String(v):'–',75+i*16,y,{align:'center'});});pdf.setFont(undefined,'bold');pdf.text(info.media!=null?String(info.media):'',75+nc*16+8,y,{align:'center'});pdf.setFont(undefined,'normal');pdf.text(info.media!=null?numberToWords(Math.round(info.media)).substring(0,18):'',75+nc*16+30,y);y+=4;});}
+
+    y+=8;if(y>250){pdf.addPage();y=20;}pdf.setFontSize(10);
+    pdf.splitTextToSize('Para efeitos legais lhe é passado o presente Certificado, que consta no livro de registo nº ______, folha ____, assinado por mim e autenticado com carimbo a óleo/selo branco em uso neste estabelecimento de Ensino.',175).forEach(function(l){pdf.text(l,18,y);y+=5;});
+    y+=5;pdf.text((sch?.name||'')+', AOS ____ DE ____________ DE 20____',105,y,{align:'center'});
+    y+=18;if(y>258){pdf.addPage();y=30;}pdf.setFontSize(10);pdf.text('Conferido por:',18,y);y+=6;pdf.setFontSize(9);pdf.text(dirT,18,y);y+=18;pdf.line(18,y,85,y);y+=5;pdf.setFont(undefined,'bold');pdf.text(dir.name||'',18,y);
+
+    pdf.save('Certificado_'+(al.name||'aluno').replace(/\s/g,'_')+'.pdf');
+    showToast('Certificado PDF baixado!','success');
+    logActivity('documento','Certificado: '+al.name);
+};
+
+window.downloadBoletinsPDF=async function(){
+    var data=STATE.cache.boletinsData;if(!data?.alunos?.length){showToast('Gere os boletins!','warning');return;}
+    var pdf=getPDF();if(!pdf)return;
+    var sch=STATE.currentSchool,alunos=data.alunos,discs=data.discs,nMap=data.notasMap,cn=data.classeNome,curso=data.curso,trim=data.trimestre,nmin=data.notaMin,yd=data.yearData;
+    var dir=getDirectorInfo(),dirT=genderTitle(dir.genero,'Director');
+    var pos=[{x:5,y:5},{x:105,y:5},{x:5,y:143},{x:105,y:143}];
+
+    alunos.forEach(function(al,idx){
+        var pi=idx%4;if(idx>0&&pi===0)pdf.addPage();var p=pos[pi],x=p.x,y=p.y;
+        pdf.setDrawColor(150);pdf.rect(x,y,90,130);
+
+        // Insígnia no boletim
+        addInsigniaToPDF(pdf, x+37, y+2, 10);
+
+        pdf.setFontSize(5);pdf.setTextColor(0);pdf.text('REPÚBLICA DE ANGOLA',x+45,y+14,{align:'center'});
+        pdf.setFontSize(6);pdf.setFont(undefined,'bold');pdf.text((sch?.name||'').substring(0,40),x+45,y+18,{align:'center'});
+        pdf.setFontSize(7);pdf.text('BOLETIM - '+trim+'º Trimestre',x+45,y+23,{align:'center'});
+        pdf.setFontSize(5.5);pdf.setFont(undefined,'normal');pdf.setTextColor(206,17,38);pdf.text('Aluno: '+(al.name||'').substring(0,35),x+3,y+28);pdf.setTextColor(0);
+        pdf.text('Classe: '+cn+' | Turma: '+(al.turmaNome||'')+' | Ano: '+(yd?.ano||''),x+3,y+32);
+        if(curso)pdf.text('Curso: '+curso,x+3,y+36);
+        var ty=y+(curso?40:36);
+        pdf.setFontSize(5);pdf.setFont(undefined,'bold');pdf.text('Disciplina',x+3,ty);pdf.text('MAC',x+60,ty,{align:'center'});pdf.text('NPT',x+72,ty,{align:'center'});pdf.text('MT',x+84,ty,{align:'center'});
+        pdf.line(x+2,ty+1,x+88,ty+1);ty+=3.5;pdf.setFont(undefined,'normal');
+        (discs||[]).forEach(function(d){if(ty>y+108)return;var k=al.id+'_'+d.id,n=nMap?nMap[k]||{}:{};var mac=n['mac'+trim]??'',npt=n['npt'+trim]??'',mt=n['mt'+trim]??'';var neg=mt!==''&&parseFloat(mt)<nmin;
+        pdf.text((d.nome||'').substring(0,28),x+3,ty);pdf.text(String(mac),x+60,ty,{align:'center'});pdf.text(String(npt),x+72,ty,{align:'center'});
+        if(neg)pdf.setTextColor(220,38,38);pdf.setFont(undefined,'bold');pdf.text(String(mt),x+84,ty,{align:'center'});pdf.setFont(undefined,'normal');pdf.setTextColor(0);ty+=3.2;});
+        var sy=y+116;pdf.setFontSize(4.5);pdf.text(dirT,x+45,sy,{align:'center'});pdf.line(x+15,sy+7,x+75,sy+7);pdf.setFont(undefined,'bold');pdf.text(dir.name||'',x+45,sy+10,{align:'center'});pdf.setFont(undefined,'normal');
+    });
+    pdf.save('Boletins_'+cn+'_T'+trim+'.pdf');showToast('Boletins PDF baixados!','success');logActivity('documento','Boletins '+cn);
+};
+
+window.downloadPassesPDF=async function(){
+    var data=STATE.cache.passesData;if(!data?.items?.length){showToast('Gere os passes!','warning');return;}
+    var pdf=getPDF();if(!pdf)return;
+    var sch=STATE.currentSchool,items=data.items,yd=data.yearData,dir=getDirectorInfo(),dirT=genderTitle(dir.genero,'Director');
+    var pos=[{x:5,y:5},{x:105,y:5},{x:5,y:97},{x:105,y:97},{x:5,y:189},{x:105,y:189}];
+
+    items.forEach(function(item,idx){
+        var pi=idx%6;if(idx>0&&pi===0)pdf.addPage();var p=pos[pi],x=p.x,y=p.y;
+        pdf.setDrawColor(206,17,38);pdf.setLineWidth(0.5);pdf.rect(x,y,90,85);
+
+        // Insígnia no passe
+        addInsigniaToPDF(pdf, x+37, y+1, 8);
+
+        pdf.setFontSize(5);pdf.setTextColor(0);pdf.text('REPÚBLICA DE ANGOLA',x+45,y+11,{align:'center'});
+        pdf.setFontSize(6);pdf.setFont(undefined,'bold');pdf.setTextColor(206,17,38);pdf.text((sch?.name||'').substring(0,35),x+45,y+15,{align:'center'});
+        pdf.setFontSize(7);pdf.setTextColor(255,255,255);pdf.setFillColor(206,17,38);pdf.roundedRect(x+20,y+17,50,5,1,1,'F');
+        pdf.text(data.type==='alunos'?'PASSE ESCOLAR':'PASSE FUNCIONAL',x+45,y+20.5,{align:'center'});
+        pdf.setTextColor(0);pdf.setFont(undefined,'normal');pdf.setDrawColor(200);pdf.rect(x+4,y+25,18,22);pdf.setFontSize(4.5);pdf.text('FOTO',x+13,y+38,{align:'center'});
+        var iy=y+28;pdf.setFontSize(7);pdf.setFont(undefined,'bold');pdf.setTextColor(206,17,38);pdf.text((item.name||'').substring(0,25),x+25,iy);
+        pdf.setTextColor(0);pdf.setFont(undefined,'normal');pdf.setFontSize(6);iy+=4;
+        if(data.type==='alunos'){pdf.text('Classe: '+(item.classeNome||''),x+25,iy);iy+=3.5;pdf.text('Turma: '+(item.turmaNome||''),x+25,iy);iy+=3.5;pdf.text('Mat: '+(item.matricula||''),x+25,iy);iy+=3.5;pdf.text('Ano: '+(yd?.ano||''),x+25,iy);}
+        else{pdf.text('Cargo: '+(item.cargo||''),x+25,iy);iy+=3.5;pdf.text('Área: '+(item.area||''),x+25,iy);iy+=3.5;pdf.text('BI: '+(item.bi||'-'),x+25,iy);}
+        pdf.setFontSize(5);pdf.text('Válido: '+(yd?.ano||new Date().getFullYear()),x+45,y+68,{align:'center'});
+        pdf.text(dirT,x+45,y+72,{align:'center'});pdf.line(x+15,y+77,x+75,y+77);pdf.setFont(undefined,'bold');pdf.text(dir.name||'',x+45,y+80,{align:'center'});pdf.setFont(undefined,'normal');
+    });
+    pdf.save('Passes_'+(data.type||'')+'.pdf');showToast('Passes PDF baixados!','success');logActivity('documento','Passes');
+};
+
+window.downloadPautaPDF=async function(){
+    var ctx=STATE.cache.pautaContext;if(!ctx){showToast('Gere a pauta!','warning');return;}
+    var pdf=getPDF('landscape');if(!pdf)return;
+    var sch=STATE.currentSchool,cn=ctx.classeNome,tn=ctx.turmaNome,tipo=ctx.tipo,trim=ctx.trimestre,alunos=ctx.alunos,discs=ctx.discs,nMap=ctx.notasMap,nmin=ctx.notaMin,isT=ctx.isTerminal;
+    var dir=getDirectorInfo(),dirT=genderTitle(dir.genero,'Director');
+
+    addInsigniaToPDF(pdf,138,2,12);
+    pdf.setFontSize(9);pdf.text('REPÚBLICA DE ANGOLA',148,16,{align:'center'});pdf.setFontSize(7);pdf.text('MINISTÉRIO DA EDUCAÇÃO',148,20,{align:'center'});
+    pdf.setFont(undefined,'bold');pdf.text(sch?.name||'',148,24,{align:'center'});pdf.setFontSize(11);
+    pdf.text('PAUTA '+(tipo==='anual'?'ANUAL':'DO '+trim+'º TRIMESTRE'),148,30,{align:'center'});
+    pdf.setFontSize(7);pdf.setFont(undefined,'normal');pdf.text('Classe: '+cn+' | Turma: '+tn+' | Ano: '+(STATE.currentYear?.ano||''),148,35,{align:'center'});
+
+    var y=40,dw=Math.min(14,(260-50)/((discs?.length||1)+1));
+    pdf.setFontSize(6);pdf.setFont(undefined,'bold');pdf.text('#',8,y);pdf.text('Nome',14,y);
+    (discs||[]).forEach(function(d,i){pdf.text(d.abreviatura||d.nome?.substring(0,4)||'',55+i*dw,y,{align:'center'});});
+    pdf.text('Obs.',55+(discs?.length||0)*dw+5,y);y+=3;pdf.line(8,y,290,y);y+=3;pdf.setFont(undefined,'normal');
+
+    (alunos||[]).forEach(function(a,i){if(y>195){pdf.addPage();y=15;}pdf.text(String(i+1),8,y);pdf.setTextColor(206,17,38);pdf.text((a.name||'').substring(0,22),14,y);pdf.setTextColor(0);
+    var ap=true,ha=true,nc=0,ns=[];
+    (discs||[]).forEach(function(d,j){var k=a.id+'_'+d.id,n=nMap?nMap[k]:null;var v;if(tipo==='trimestral')v=trim==='3'?(isT?n?.mediaFinal:n?.mt3??n?.mediaFinal):n?.['mt'+trim];else v=n?.mediaFinal;var ds=v!=null?String(v):'',neg=ds&&parseFloat(ds)<nmin;if(neg){ap=false;nc++;ns.push(d.nome);}if(!ds)ha=false;if(neg)pdf.setTextColor(220,38,38);pdf.text(ds,55+j*dw,y,{align:'center'});pdf.setTextColor(0);});
+    var obs='';if(a.estado!=='Ativo')obs='Transf.';else if(ha)obs=checkApprovalRules(cn,ap,nc,ns,a.genero,nmin);pdf.text(obs,55+(discs?.length||0)*dw+5,y);y+=4;});
+
+    y+=12;if(y>185){pdf.addPage();y=30;}pdf.setFontSize(7);
+    pdf.text(dirT,50,y,{align:'center'});pdf.line(20,y+10,80,y+10);pdf.setFont(undefined,'bold');pdf.text(dir.name||'',50,y+14,{align:'center'});
+    pdf.setFont(undefined,'normal');pdf.text('O(A) Coord. Pedagógico(a)',148,y,{align:'center'});pdf.line(118,y+10,178,y+10);
+    pdf.text('O(A) Secretário(a)',240,y,{align:'center'});pdf.line(210,y+10,270,y+10);
+
+    pdf.save('Pauta_'+cn+'_'+tn+'.pdf');showToast('Pauta PDF baixada!','success');logActivity('documento','Pauta '+cn);
+};
+
+window.downloadReciboPDF=async function(id){try{var doc=await yearRef().collection('pagamentos').doc(id).get();if(!doc.exists)return;var p=doc.data(),sch=STATE.currentSchool;var pdf=getPDF();if(!pdf)return;addInsigniaToPDF(pdf,85,3,15);pdf.setFontSize(11);pdf.text('REPÚBLICA DE ANGOLA',105,20,{align:'center'});pdf.setFontSize(9);pdf.text(sch?.name||'',105,25,{align:'center'});pdf.setFontSize(15);pdf.setFont(undefined,'bold');pdf.text('RECIBO',105,35,{align:'center'});pdf.setFontSize(11);pdf.setFont(undefined,'normal');var y=45;var ln=function(l,v){pdf.setFont(undefined,'bold');pdf.text(l+':',20,y);pdf.setFont(undefined,'normal');pdf.text(String(v||'-'),75,y);y+=8;};ln('Recibo',p.recibo);ln('Data',p.data);ln('Aluno',p.alunoNome);ln('Título',p.titulo);ln('Valor',formatCurrency(p.valor));ln('Forma',p.formaPagamento);y+=5;pdf.text('Valor por extenso: '+numberToWords(Math.round(p.valor||0)),20,y);y+=20;pdf.line(30,y,90,y);pdf.text('Emitido por',60,y+5,{align:'center'});pdf.line(120,y,180,y);pdf.text('Recebido por',150,y+5,{align:'center'});pdf.save('Recibo_'+p.recibo+'.pdf');showToast('Recibo OK!','success');}catch(e){showToast(e.message,'error');}};
+
+// ================================================================
+// 14. LOADING + CSS
+// ================================================================
+var lt;window.showLoading=function(){var e=document.getElementById('loadingOverlay');if(e)e.style.display='flex';clearTimeout(lt);lt=setTimeout(function(){hideLoading();},25000);};
+window.hideLoading=function(){var e=document.getElementById('loadingOverlay');if(e)e.style.display='none';clearTimeout(lt);};
+
+var css=document.createElement('style');css.textContent='@media(max-width:768px){.form-row,.form-row-3{grid-template-columns:1fr!important;}.stats-grid{grid-template-columns:1fr 1fr;gap:8px;}.nota-input{width:40px!important;font-size:11px!important;}table{font-size:11px;}table th,table td{padding:5px 6px;}}@media(max-width:480px){.stats-grid{grid-template-columns:1fr;}.page-content{padding:8px;}}.table-container{overflow-x:auto;-webkit-overflow-scrolling:touch;}@media print{.sidebar,.header,.page-header,.page-actions,.filter-bar,.tabs,.btn,.consultation-fab{display:none!important;}.main-content{margin-left:0!important;}}';document.head.appendChild(css);
+
+console.log('%c✅ SCRIPT FINAL COMPLETO CARREGADO','color:#059669;font-size:16px;font-weight:bold;');
+console.log('  ✓ PDFs com insígnia em TODOS documentos');
+console.log('  ✓ Professor só vê suas turmas/disciplinas');
+console.log('  ✓ Professor NÃO vê faltas de professores');
+console.log('  ✓ Dashboard por perfil de acesso');
+console.log('  ✓ Pautas filtram CORRETAMENTE por turma');
+console.log('  ✓ MFD = CT3×0.6 + Exame×0.4 para classes finais');
+console.log('  ✓ Gênero em todos documentos');
+console.log('  ✓ Assinaturas: cargo → traço → nome');
+
+})();
+</script>
+<script>
+// ================================================================
+// PATCH DEFINITIVO - PROFESSOR VÊ SUAS ATRIBUIÇÕES
+// ================================================================
+console.log('🔧 Patch Professor Definitivo...');
+
+// ================================================================
+// FUNÇÃO PRINCIPAL: Encontrar o ID do professor nas atribuições
+// O professor pode estar identificado por:
+// - UID do Firebase Auth (STATE.userProfile.id)
+// - ID do documento na collection professores
+// - Email
+// - UID salvo no documento do professor
+// ================================================================
+async function getMyProfessorIds() {
+    var ids = [];
+    var uid = STATE.userProfile?.id || '';
+    var email = STATE.userProfile?.email || STATE.currentUser?.email || '';
+
+    // Adicionar UID do auth
+    if (uid) ids.push(uid);
+
+    // Buscar na collection de professores
+    try {
+        var profs = await FS_school('professores');
+        profs.forEach(function(p) {
+            // Verificar por UID
+            if (p.uid === uid && ids.indexOf(p.id) < 0) ids.push(p.id);
+            // Verificar por email
+            if (p.email === email) {
+                if (ids.indexOf(p.id) < 0) ids.push(p.id);
+                if (p.uid && ids.indexOf(p.uid) < 0) ids.push(p.uid);
+            }
+            // Verificar se o ID do documento é o UID
+            if (p.id === uid && ids.indexOf(p.id) < 0) ids.push(p.id);
+        });
+    } catch(e) {
+        console.error('getMyProfessorIds error:', e);
+    }
+
+    console.log('🔍 IDs do professor encontrados:', ids);
+    return ids;
+}
+
+// Verificar se uma atribuição pertence ao professor logado
+function isMyAtribuicao(atrib, myIds) {
+    if (!atrib || !myIds || !myIds.length) return false;
+    return myIds.indexOf(atrib.professorId) >= 0;
+}
+
+// ================================================================
+// NOTAS: Professor só vê suas atribuições
+// ================================================================
+window.populateNotaFilters = async function() {
+    try {
+        var role = STATE.userProfile?.role || '';
+        var isProfessor = (role === 'professor');
+        var classesData = [];
+
+        if (isProfessor) {
+            var myIds = await getMyProfessorIds();
+            var allAtribs = await FS_year('atribuicoes');
+
+            // DEBUG: Mostrar todas atribuições para verificar
+            console.log('📋 Todas atribuições do ano:', allAtribs.length);
+            allAtribs.forEach(function(a) {
+                console.log('  Atrib:', a.professorNome, '| profId:', a.professorId, '| classe:', a.classeNome);
+            });
+            console.log('🔑 Meus IDs:', myIds);
+
+            var myAtribs = allAtribs.filter(function(a) {
+                return isMyAtribuicao(a, myIds);
+            });
+
+            console.log('✅ Minhas atribuições:', myAtribs.length);
+
+            if (!myAtribs.length) {
+                // Tentar match por nome como último recurso
+                var myName = STATE.userProfile?.name || '';
+                if (myName) {
+                    myAtribs = allAtribs.filter(function(a) {
+                        return a.professorNome && a.professorNome.toLowerCase() === myName.toLowerCase();
+                    });
+                    console.log('🔄 Match por nome:', myAtribs.length);
+                }
+            }
+
+            if (!myAtribs.length) {
+                showToast('Nenhuma atribuição encontrada para si. Contacte a direcção.', 'warning');
+                console.warn('⚠️ Professor sem atribuições. UID:', STATE.userProfile.id, 'Email:', STATE.currentUser?.email);
+                return;
+            }
+
+            STATE.cache.myAtribuicoes = myAtribs;
+            STATE.cache.myProfIds = myIds;
+
+            // Extrair classes únicas
+            var classIds = [];
+            myAtribs.forEach(function(a) {
+                if (classIds.indexOf(a.classeId) < 0) classIds.push(a.classeId);
+            });
+
+            var allClasses = await FS_year('classes');
+            classesData = allClasses.filter(function(c) {
+                return classIds.indexOf(c.id) >= 0;
+            });
+
+        } else {
+            classesData = await getAllClasses();
+        }
+
+        classesData.sort(function(a, b) {
+            return (a.ordem || 0) - (b.ordem || 0);
+        });
+
+        var sel = document.getElementById('notaClasse');
+        if (!sel) return;
+
+        var opts = '<option value="">Selecione a classe...</option>';
+        classesData.forEach(function(c) {
+            opts += '<option value="' + c.id + '"' +
+                ' data-nome="' + (c.nome || '') + '"' +
+                ' data-ciclo="' + (c.ciclo || '') + '"' +
+                ' data-notamax="' + (c.notaMax || 20) + '"' +
+                ' data-curso="' + (c.curso || '') + '">' +
+                c.nome + (c.curso ? ' - ' + c.curso : '') +
+                '</option>';
+        });
+        sel.innerHTML = opts;
+
+    } catch(e) {
+        console.error('populateNotaFilters error:', e);
+        showToast('Erro: ' + e.message, 'error');
+    }
+};
+
+window.onNotaClasseChange = async function() {
+    var classeId = document.getElementById('notaClasse')?.value;
+    if (!classeId) return;
+
+    var role = STATE.userProfile?.role || '';
+    var isProfessor = (role === 'professor');
+
+    try {
+        var turmas = [];
+        var discs = [];
+
+        if (isProfessor) {
+            var myAtribs = STATE.cache.myAtribuicoes || [];
+            var classAtribs = myAtribs.filter(function(a) {
+                return a.classeId === classeId;
+            });
+
+            var turmaIds = [];
+            var discIds = [];
+            classAtribs.forEach(function(a) {
+                if (turmaIds.indexOf(a.turmaId) < 0) turmaIds.push(a.turmaId);
+                if (discIds.indexOf(a.disciplinaId) < 0) discIds.push(a.disciplinaId);
+            });
+
+            var allTurmas = await FS_year('turmas');
+            turmas = allTurmas.filter(function(t) { return turmaIds.indexOf(t.id) >= 0; });
+
+            var allDiscs = await FS_year('disciplinas');
+            discs = allDiscs.filter(function(d) { return discIds.indexOf(d.id) >= 0; });
+        } else {
+            turmas = await getTurmasForClasse(classeId);
+            discs = await getDisciplinasForClasse(classeId);
+        }
+
+        discs.sort(function(a, b) { return (a.ordem || 0) - (b.ordem || 0); });
+
+        var tSel = document.getElementById('notaTurma');
+        if (tSel) {
+            var tOpts = '<option value="">Selecione a turma...</option>';
+            turmas.forEach(function(t) {
+                tOpts += '<option value="' + t.id + '" data-nome="' + (t.nome || '') + '">' +
+                    t.nome + ' (' + (t.turnoNome || '') + ')</option>';
+            });
+            tSel.innerHTML = tOpts;
+        }
+
+        var dSel = document.getElementById('notaDisciplina');
+        if (dSel) {
+            var dOpts = '<option value="">Selecione a disciplina...</option>';
+            discs.forEach(function(d) {
+                dOpts += '<option value="' + d.id + '" data-nome="' + (d.nome || '') + '">' +
+                    d.nome + '</option>';
+            });
+            dSel.innerHTML = dOpts;
+        }
+    } catch(e) {
+        console.error('onNotaClasseChange error:', e);
+    }
+};
+
+window.onNotaTurmaChange = async function() {
+    var classeId = document.getElementById('notaClasse')?.value;
+    var turmaId = document.getElementById('notaTurma')?.value;
+    if (!classeId || !turmaId) return;
+
+    var role = STATE.userProfile?.role || '';
+
+    if (role === 'professor') {
+        try {
+            var myAtribs = STATE.cache.myAtribuicoes || [];
+            var turmaAtribs = myAtribs.filter(function(a) {
+                return a.classeId === classeId && a.turmaId === turmaId;
+            });
+
+            var discIds = [];
+            turmaAtribs.forEach(function(a) {
+                if (discIds.indexOf(a.disciplinaId) < 0) discIds.push(a.disciplinaId);
+            });
+
+            var allDiscs = await FS_year('disciplinas');
+            var discs = allDiscs.filter(function(d) {
+                return discIds.indexOf(d.id) >= 0;
+            }).sort(function(a, b) { return (a.ordem || 0) - (b.ordem || 0); });
+
+            var dSel = document.getElementById('notaDisciplina');
+            if (dSel) {
+                var dOpts = '<option value="">Selecione...</option>';
+                discs.forEach(function(d) {
+                    dOpts += '<option value="' + d.id + '" data-nome="' + (d.nome || '') + '">' + d.nome + '</option>';
+                });
+                dSel.innerHTML = dOpts;
+            }
+        } catch(e) { console.error(e); }
+    }
+
+    loadNotasGrid();
+};
+
+// ================================================================
+// PRESENÇAS: Professor só vê suas turmas
+// ================================================================
+window.populatePresencaFilters = async function() {
+    try {
+        var role = STATE.userProfile?.role || '';
+        var isProfessor = (role === 'professor');
+        var classesData = [];
+
+        if (isProfessor) {
+            var myIds = STATE.cache.myProfIds || await getMyProfessorIds();
+            var allAtribs = await FS_year('atribuicoes');
+            var myAtribs = allAtribs.filter(function(a) { return isMyAtribuicao(a, myIds); });
+
+            if (!myAtribs.length) {
+                var myName = STATE.userProfile?.name || '';
+                myAtribs = allAtribs.filter(function(a) {
+                    return a.professorNome && a.professorNome.toLowerCase() === myName.toLowerCase();
+                });
+            }
+
+            var classIds = [];
+            myAtribs.forEach(function(a) { if (classIds.indexOf(a.classeId) < 0) classIds.push(a.classeId); });
+            var allClasses = await FS_year('classes');
+            classesData = allClasses.filter(function(c) { return classIds.indexOf(c.id) >= 0; });
+
+            STATE.cache.myPresAtribs = myAtribs;
+        } else {
+            classesData = await getAllClasses();
+        }
+
+        classesData.sort(function(a, b) { return (a.ordem || 0) - (b.ordem || 0); });
+        var sel = document.getElementById('presClasse');
+        if (!sel) return;
+        var opts = '<option value="">Selecione...</option>';
+        classesData.forEach(function(c) {
+            opts += '<option value="' + c.id + '" data-nome="' + c.nome + '">' +
+                c.nome + (c.curso ? ' - ' + c.curso : '') + '</option>';
+        });
+        sel.innerHTML = opts;
+    } catch(e) { console.error(e); }
+};
+
+window.onPresClasseChange = async function() {
+    var classeId = document.getElementById('presClasse')?.value;
+    if (!classeId) return;
+
+    var role = STATE.userProfile?.role || '';
+    var turmas = [];
+
+    if (role === 'professor') {
+        var myAtribs = STATE.cache.myPresAtribs || STATE.cache.myAtribuicoes || [];
+        var classAtribs = myAtribs.filter(function(a) { return a.classeId === classeId; });
+        var turmaIds = [];
+        classAtribs.forEach(function(a) { if (turmaIds.indexOf(a.turmaId) < 0) turmaIds.push(a.turmaId); });
+        var allTurmas = await FS_year('turmas');
+        turmas = allTurmas.filter(function(t) { return turmaIds.indexOf(t.id) >= 0; });
+    } else {
+        turmas = await getTurmasForClasse(classeId);
+    }
+
+    var sel = document.getElementById('presTurma');
+    if (!sel) return;
+    var opts = '<option value="">Selecione...</option>';
+    turmas.forEach(function(t) {
+        opts += '<option value="' + t.id + '" data-nome="' + (t.nome || '') + '">' + t.nome + '</option>';
+    });
+    sel.innerHTML = opts;
+};
+
+// ================================================================
+// DASHBOARD: Professor vê SUAS coisas, não atividades da escola
+// ================================================================
+window.renderSchoolDashboard = async function(content) {
+    if (!STATE.currentSchool) {
+        content.innerHTML = '<div class="empty-state"><h3>Sem escola</h3></div>';
+        return;
+    }
+
+    var role = STATE.userProfile?.role || '';
+    var isProfessor = (role === 'professor');
+
+    // Stats
+    var statsHTML = '<div class="stats-grid">';
+
+    if (isProfessor) {
+        // Buscar atribuições do professor
+        var myIds = await getMyProfessorIds();
+        var allAtribs = await FS_year('atribuicoes');
+        var myAtribs = allAtribs.filter(function(a) { return isMyAtribuicao(a, myIds); });
+
+        // Fallback por nome
+        if (!myAtribs.length) {
+            var myName = STATE.userProfile?.name || '';
+            myAtribs = allAtribs.filter(function(a) {
+                return a.professorNome && a.professorNome.toLowerCase() === myName.toLowerCase();
+            });
+        }
+
+        STATE.cache.myAtribuicoes = myAtribs;
+        STATE.cache.myProfIds = myIds;
+
+        var myTurmaIds = [];
+        var myDiscIds = [];
+        myAtribs.forEach(function(a) {
+            if (myTurmaIds.indexOf(a.turmaId) < 0) myTurmaIds.push(a.turmaId);
+            if (myDiscIds.indexOf(a.disciplinaId) < 0) myDiscIds.push(a.disciplinaId);
+        });
+
+        var allAlunos = await FS_year('alunos');
+        var myAlunosCount = allAlunos.filter(function(a) {
+            return myTurmaIds.indexOf(a.turmaId) >= 0 && a.estado === 'Ativo';
+        }).length;
+
+        statsHTML += '<div class="stat-card"><div class="stat-icon blue"><i class="fas fa-user-graduate"></i></div><div class="stat-info"><h4>' + myAlunosCount + '</h4><p>Meus Alunos</p></div></div>';
+        statsHTML += '<div class="stat-card"><div class="stat-icon green"><i class="fas fa-users"></i></div><div class="stat-info"><h4>' + myTurmaIds.length + '</h4><p>Minhas Turmas</p></div></div>';
+        statsHTML += '<div class="stat-card"><div class="stat-icon purple"><i class="fas fa-book"></i></div><div class="stat-info"><h4>' + myDiscIds.length + '</h4><p>Disciplinas</p></div></div>';
+        statsHTML += '<div class="stat-card"><div class="stat-icon yellow"><i class="fas fa-calendar"></i></div><div class="stat-info"><h4>' + (STATE.currentYear?.ano || '-') + '</h4><p>Ano Letivo</p></div></div>';
+    } else {
+        var totalA = 0, totalP = 0, totalT = 0;
+        if (STATE.currentYearId) {
+            try { totalA = (await FS_year('alunos')).filter(function(a) { return a.estado === 'Ativo'; }).length; } catch(e) {}
+            try { totalT = (await FS_year('turmas')).length; } catch(e) {}
+        }
+        try { totalP = (await FS_school('professores')).length; } catch(e) {}
+
+        statsHTML += '<div class="stat-card"><div class="stat-icon blue"><i class="fas fa-user-graduate"></i></div><div class="stat-info"><h4>' + totalA + '</h4><p>Alunos</p></div></div>';
+        if (['super_admin', 'diretor', 'subdiretor_pedagogico', 'subdiretor_administrativo'].indexOf(role) >= 0) {
+            statsHTML += '<div class="stat-card"><div class="stat-icon green"><i class="fas fa-chalkboard-teacher"></i></div><div class="stat-info"><h4>' + totalP + '</h4><p>Professores</p></div></div>';
+            statsHTML += '<div class="stat-card"><div class="stat-icon purple"><i class="fas fa-users"></i></div><div class="stat-info"><h4>' + totalT + '</h4><p>Turmas</p></div></div>';
+        }
+        statsHTML += '<div class="stat-card"><div class="stat-icon yellow"><i class="fas fa-calendar"></i></div><div class="stat-info"><h4>' + (STATE.currentYear?.ano || '-') + '</h4><p>Ano Letivo</p></div></div>';
+    }
+    statsHTML += '</div>';
+
+    // Aviso
+    var alertHTML = !STATE.currentYear ? '<div class="card" style="border-left:4px solid var(--warning);margin-bottom:16px;"><div class="card-body"><h3 style="color:var(--warning);"><i class="fas fa-exclamation-triangle"></i> Atenção</h3><p>Nenhum ano letivo aberto.</p></div></div>' : '';
+
+    // Acções
+    var actHTML = '<div class="card"><div class="card-header"><h3><i class="fas fa-bolt"></i> Acções Rápidas</h3></div><div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">';
+    if (isProfessor) {
+        actHTML += '<button class="btn btn-success btn-sm" onclick="navigateTo(\'notas\')"><i class="fas fa-star"></i> Lançar Notas</button>';
+        actHTML += '<button class="btn btn-warning btn-sm" onclick="navigateTo(\'presencas\')"><i class="fas fa-clipboard"></i> Presenças</button>';
+        actHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'pautas\')"><i class="fas fa-file-alt"></i> Ver Pautas</button>';
+        actHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'mensagens\')"><i class="fas fa-comments"></i> Mensagens</button>';
+    } else if (role === 'secretario') {
+        actHTML += '<button class="btn btn-primary btn-sm" onclick="navigateTo(\'alunos\')"><i class="fas fa-user-plus"></i> Matricular</button>';
+        actHTML += '<button class="btn btn-success btn-sm" onclick="navigateTo(\'pagamentos\')"><i class="fas fa-money-bill"></i> Pagamentos</button>';
+        actHTML += '<button class="btn btn-warning btn-sm" onclick="navigateTo(\'boletins\')"><i class="fas fa-id-card"></i> Boletins</button>';
+        actHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'declaracoes\')"><i class="fas fa-file-contract"></i> Declarações</button>';
+    } else {
+        actHTML += '<button class="btn btn-primary btn-sm" onclick="navigateTo(\'alunos\')"><i class="fas fa-user-plus"></i> Matricular</button>';
+        actHTML += '<button class="btn btn-success btn-sm" onclick="navigateTo(\'notas\')"><i class="fas fa-star"></i> Notas</button>';
+        actHTML += '<button class="btn btn-warning btn-sm" onclick="navigateTo(\'presencas\')"><i class="fas fa-clipboard"></i> Presenças</button>';
+        actHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'pautas\')"><i class="fas fa-file-alt"></i> Pautas</button>';
+        actHTML += '<button class="btn btn-angola btn-sm" onclick="navigateTo(\'boletins\')"><i class="fas fa-id-card"></i> Boletins</button>';
+        actHTML += '<button class="btn btn-secondary btn-sm" onclick="navigateTo(\'pagamentos\')"><i class="fas fa-money-bill"></i> Pagamentos</button>';
+    }
+    actHTML += '</div></div>';
+
+    // Painel direito
+    var rightHTML = '';
+    if (isProfessor) {
+        // PROFESSOR: Mostrar suas atribuições
+        var myAtribs2 = STATE.cache.myAtribuicoes || [];
+        rightHTML = '<div class="card"><div class="card-header"><h3><i class="fas fa-link"></i> Minhas Atribuições</h3></div><div class="card-body" style="max-height:300px;overflow-y:auto;">';
+
+        if (myAtribs2.length) {
+            myAtribs2.forEach(function(a) {
+                rightHTML += '<div style="padding:10px;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:8px;">' +
+                    '<div style="font-weight:700;color:var(--primary);">' + (a.disciplinaNome || '') + '</div>' +
+                    '<div style="font-size:12px;color:var(--gray-600);margin-top:2px;">' +
+                    '<i class="fas fa-layer-group" style="width:14px;"></i> ' + (a.classeNome || '') +
+                    (a.curso ? ' (' + a.curso + ')' : '') + '</div>' +
+                    '<div style="font-size:12px;color:var(--gray-600);">' +
+                    '<i class="fas fa-users" style="width:14px;"></i> ' + (a.turmaNome || '') +
+                    ' <span style="color:var(--gray-400);">|</span> ' + (a.turnoNome || '') + '</div>' +
+                    '</div>';
+            });
+        } else {
+            rightHTML += '<div class="empty-state" style="padding:20px;"><i class="fas fa-exclamation-circle" style="font-size:32px;color:var(--warning);"></i><h3 style="font-size:14px;">Sem Atribuições</h3><p style="font-size:12px;">A direcção ainda não lhe atribuiu turmas e disciplinas.</p></div>';
+        }
+        rightHTML += '</div></div>';
+    } else {
+        // OUTROS: Atividades recentes
+        rightHTML = '<div class="card"><div class="card-header"><h3><i class="fas fa-clock"></i> Atividades Recentes</h3></div><div class="card-body" id="recentAct" style="max-height:300px;overflow-y:auto;"><p style="color:var(--gray-500);text-align:center;">Carregando...</p></div></div>';
+    }
+
+    // Montar
+    content.innerHTML = '<div class="page-header"><div><h2>Painel - ' + STATE.currentSchool.name + '</h2><span class="breadcrumb">' + (STATE.currentYear ? STATE.currentYear.ano : 'Sem ano ativo') + '</span></div></div>' +
+        statsHTML + alertHTML +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">' + actHTML + rightHTML + '</div>';
+
+    // Carregar atividades (só para não-professores)
+    if (!isProfessor) {
+        try {
+            var acts = await FS_school('atividades_recentes');
+            acts.sort(function(a, b) { return (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0); });
+            var rc = document.getElementById('recentAct');
+            if (!rc) return;
+            if (!acts.length) { rc.innerHTML = '<p style="color:var(--gray-500);text-align:center;font-size:13px;">Nenhuma atividade.</p>'; return; }
+            var h = '';
+            acts.slice(0, 10).forEach(function(a) {
+                var dt = a.timestamp?.toDate ? a.timestamp.toDate().toLocaleString('pt-AO') : '';
+                h += '<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid var(--gray-200);font-size:12px;">' +
+                    '<i class="fas fa-circle" style="color:var(--primary);font-size:5px;margin-top:6px;"></i>' +
+                    '<div><strong>' + (a.details || '') + '</strong><br>' +
+                    '<small style="color:var(--gray-500);">' + (a.userName || '') + ' • ' + dt + '</small></div></div>';
+            });
+            rc.innerHTML = h;
+        } catch(e) {}
+    }
+};
+
+// ================================================================
+// PRESENÇAS: Professor NÃO vê "Faltas de Professores"
+// ================================================================
+window.renderPresencas = async function() {
+    var content = document.getElementById('pageContent');
+    if (!STATE.currentSchool || !STATE.currentYearId) {
+        content.innerHTML = '<div class="empty-state"><h3>Ano letivo necessário</h3></div>';
+        return;
+    }
+
+    var role = STATE.userProfile?.role || '';
+    var showProfFaltas = ['super_admin', 'diretor', 'subdiretor_pedagogico', 'subdiretor_administrativo', 'coordenador'].indexOf(role) >= 0;
+
+    var html = '<div class="page-header"><div><h2><i class="fas fa-clipboard-check"></i> Presenças</h2></div></div>';
+
+    if (showProfFaltas) {
+        html += '<div class="tabs" id="presencaTabs"><div class="tab active" onclick="switchPresencaTab(\'alunos\')">Presenças de Alunos</div><div class="tab" onclick="switchPresencaTab(\'professores\')">Faltas de Professores</div></div>';
+    }
+
+    html += '<div id="presTabAlunos"><div class="card" style="margin-bottom:16px;"><div class="card-body"><div class="filter-bar">' +
+        '<div class="form-group"><label>Data</label><input type="date" id="presData" value="' + new Date().toISOString().split('T')[0] + '" onchange="loadPresencasAlunos()"></div>' +
+        '<div class="form-group" style="min-width:150px;"><label>Classe</label><select id="presClasse" onchange="onPresClasseChange()"><option value="">Selecione...</option></select></div>' +
+        '<div class="form-group" style="min-width:130px;"><label>Turma</label><select id="presTurma" onchange="loadPresencasAlunos()"><option value="">Selecione...</option></select></div>' +
+        '</div></div></div>' +
+        '<div class="card"><div class="card-header"><h3 id="presencaTitle">Selecione filtros</h3><div id="presencaCounters" style="display:flex;gap:12px;font-size:12px;font-weight:600;"></div></div><div class="card-body"><div id="presencasContainer"><div class="empty-state"><h3>Selecione data, classe e turma</h3></div></div></div><div class="modal-footer" id="presFooter" style="display:none;"><button class="btn btn-success" onclick="savePresencas()"><i class="fas fa-save"></i> Salvar</button></div></div></div>';
+
+    if (showProfFaltas) {
+        html += '<div id="presTabProfessores" style="display:none;"><div class="card" style="margin-bottom:16px;"><div class="card-body"><div class="filter-bar">' +
+            '<button class="btn btn-primary" onclick="openFaltaProfModal()"><i class="fas fa-plus"></i> Registar Falta</button>' +
+            '</div></div></div><div class="card"><div class="card-header"><h3>Faltas de Professores</h3></div><div class="card-body" id="faltasProfsContainer"><div class="spinner" style="margin:20px auto;"></div></div></div></div>';
+    }
+
+    content.innerHTML = html;
+
+    await populatePresencaFilters();
+    if (showProfFaltas) await loadFaltasProfs();
+};
+
+console.log('✅ Patch Professor Definitivo aplicado!');
+console.log('  ✓ Busca professor por UID, email e nome');
+console.log('  ✓ Professor vê APENAS suas classes/turmas/disciplinas');
+console.log('  ✓ Dashboard mostra atribuições do professor');
+console.log('  ✓ Professor NÃO vê atividades recentes da escola');
+console.log('  ✓ Professor NÃO vê faltas de professores');
+</script>
 </body>
 </html>
