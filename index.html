@@ -15845,1097 +15845,1433 @@ console.log('📌 10 blocos carregados | 27+ módulos | Firebase conectado');
 </script>
 <script>
 // ============================================================
-// SCRIPT FINAL DE CORREÇÕES, MELHORIAS E RESOLUÇÃO DE BUGS
-// Versão: 1.1.0 | Data: 2025
+// CORREÇÃO ABSOLUTA FINAL - SUBSTITUIR TODOS SCRIPTS DE CORREÇÃO
+// APAGAR TODOS OS SCRIPTS V2, V3, V4 ANTERIORES
+// MANTER APENAS BLOCOS 1-10 + ESTE SCRIPT
 // ============================================================
 
-console.log('🔧 Iniciando script de correções finais...');
-
 // ========================================
-// FIX 1: COMPRESSÃO DE IMAGENS ATÉ 15MB
-// Resolve erro ao cadastrar com fotos grandes
+// 1. HELPERS DE ACESSO AO FIRESTORE (SEM INDEX)
 // ========================================
-async function compressImage(file, maxWidth = 500, quality = 0.6) {
-    return new Promise((resolve, reject) => {
-        // Validação de tamanho (15MB)
-        if (file.size > 15 * 1024 * 1024) {
-            reject(new Error('Ficheiro muito grande! Máximo permitido: 15MB.'));
-            return;
+async function FS_getAll(path) {
+    // path = 'schools/{id}/anos_letivos/{id}/alunos'
+    try {
+        const parts = path.split('/');
+        let ref = db;
+        for (let i = 0; i < parts.length; i++) {
+            ref = (i % 2 === 0) ? ref.collection(parts[i]) : ref.doc(parts[i]);
         }
+        const snap = await ref.get();
+        return snap.docs ? snap.docs.map(d => ({id: d.id, ...d.data()})) : [];
+    } catch(e) {
+        console.error('FS_getAll error:', path, e.message);
+        return [];
+    }
+}
 
-        // Validação de tipo
-        if (!file.type.startsWith('image/')) {
-            reject(new Error('Ficheiro inválido! Selecione uma imagem.'));
-            return;
-        }
+function FS_yearPath(col) {
+    return `schools/${STATE.currentSchool?.id}/anos_letivos/${STATE.currentYearId}/${col}`;
+}
 
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error('Erro ao ler o ficheiro.'));
+function FS_schoolPath(col) {
+    return `schools/${STATE.currentSchool?.id}/${col}`;
+}
 
-        reader.onload = (event) => {
-            const img = new Image();
-            img.onerror = () => reject(new Error('Erro ao processar a imagem.'));
+function FS_yearPathCustom(schoolId, yearId, col) {
+    return `schools/${schoolId}/anos_letivos/${yearId}/${col}`;
+}
 
-            img.onload = () => {
-                try {
-                    const canvas = document.createElement('canvas');
-                    let w = img.width;
-                    let h = img.height;
+async function FS_year(col) {
+    if (!STATE.currentSchool?.id || !STATE.currentYearId) return [];
+    return FS_getAll(FS_yearPath(col));
+}
 
-                    // Redimensionamento proporcional
-                    if (w > maxWidth) {
-                        h = Math.round(h * maxWidth / w);
-                        w = maxWidth;
-                    }
-
-                    // Limitar altura também
-                    const maxHeight = maxWidth * 1.5;
-                    if (h > maxHeight) {
-                        w = Math.round(w * maxHeight / h);
-                        h = maxHeight;
-                    }
-
-                    canvas.width = w;
-                    canvas.height = h;
-
-                    const ctx = canvas.getContext('2d');
-                    // Fundo branco para transparências PNG
-                    ctx.fillStyle = '#FFFFFF';
-                    ctx.fillRect(0, 0, w, h);
-                    ctx.drawImage(img, 0, 0, w, h);
-
-                    // Comprimir como JPEG
-                    let result = canvas.toDataURL('image/jpeg', quality);
-
-                    // Se ainda muito grande (>800KB), comprimir mais
-                    if (result.length > 800000) {
-                        result = canvas.toDataURL('image/jpeg', 0.4);
-                    }
-                    // Última tentativa se ainda grande
-                    if (result.length > 800000) {
-                        canvas.width = Math.round(w * 0.6);
-                        canvas.height = Math.round(h * 0.6);
-                        const ctx2 = canvas.getContext('2d');
-                        ctx2.fillStyle = '#FFFFFF';
-                        ctx2.fillRect(0, 0, canvas.width, canvas.height);
-                        ctx2.drawImage(img, 0, 0, canvas.width, canvas.height);
-                        result = canvas.toDataURL('image/jpeg', 0.35);
-                    }
-
-                    resolve(result);
-                } catch (err) {
-                    reject(new Error('Erro na compressão: ' + err.message));
-                }
-            };
-            img.src = event.target.result;
-        };
-        reader.readAsDataURL(file);
-    });
+async function FS_school(col) {
+    if (!STATE.currentSchool?.id) return [];
+    return FS_getAll(FS_schoolPath(col));
 }
 
 // ========================================
-// FIX 2: COMPRESSÃO DA INSÍGNIA (até 2MB)
+// 2. COMPRESSÃO DE IMAGENS (até 15MB)
 // ========================================
-async function compressInsignia(file, maxWidth = 200, quality = 0.8) {
-    return new Promise((resolve, reject) => {
-        if (file.size > 5 * 1024 * 1024) {
-            reject(new Error('Insígnia muito grande! Máximo: 5MB.'));
-            return;
-        }
-        const reader = new FileReader();
-        reader.onerror = () => reject(new Error('Erro ao ler ficheiro.'));
-        reader.onload = (e) => {
+async function compressImage(file, maxW, qual) {
+    maxW = maxW || 500; qual = qual || 0.6;
+    if (file.size > 15 * 1024 * 1024) throw new Error('Máximo 15MB.');
+    return new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onerror = () => rej(new Error('Erro ao ler.'));
+        r.onload = (ev) => {
             const img = new Image();
-            img.onerror = () => reject(new Error('Erro ao processar imagem.'));
+            img.onerror = () => rej(new Error('Erro na imagem.'));
             img.onload = () => {
-                const canvas = document.createElement('canvas');
+                const c = document.createElement('canvas');
                 let w = img.width, h = img.height;
-                if (w > maxWidth) { h = Math.round(h * maxWidth / w); w = maxWidth; }
-                canvas.width = w;
-                canvas.height = h;
-                const ctx = canvas.getContext('2d');
+                if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+                c.width = w; c.height = h;
+                const ctx = c.getContext('2d');
+                ctx.fillStyle = '#FFF'; ctx.fillRect(0, 0, w, h);
                 ctx.drawImage(img, 0, 0, w, h);
-                // Manter PNG para transparência
-                let result = canvas.toDataURL('image/png', quality);
-                if (result.length > 500000) {
-                    result = canvas.toDataURL('image/jpeg', 0.7);
+                let out = c.toDataURL('image/jpeg', qual);
+                if (out.length > 800000) out = c.toDataURL('image/jpeg', 0.3);
+                if (out.length > 800000) {
+                    c.width = Math.round(w * 0.5); c.height = Math.round(h * 0.5);
+                    const ctx2 = c.getContext('2d');
+                    ctx2.fillStyle = '#FFF'; ctx2.fillRect(0, 0, c.width, c.height);
+                    ctx2.drawImage(img, 0, 0, c.width, c.height);
+                    out = c.toDataURL('image/jpeg', 0.3);
                 }
-                resolve(result);
+                res(out);
             };
-            img.src = e.target.result;
+            img.src = ev.target.result;
         };
-        reader.readAsDataURL(file);
+        r.readAsDataURL(file);
     });
 }
 
-// ========================================
-// FIX 3: SETUP - Corrigir cadastro admin com foto
-// ========================================
-async function handleSetup(e) {
-    e.preventDefault();
-    const name = document.getElementById('setupName').value.trim();
-    const email = document.getElementById('setupEmail').value.trim();
-    const phone = document.getElementById('setupPhone').value.trim();
-    const password = document.getElementById('setupPassword').value;
-    const confirm = document.getElementById('setupPasswordConfirm').value;
-
-    if (!name || !email) {
-        showToast('Preencha nome e email!', 'error');
-        return false;
-    }
-    if (password !== confirm) {
-        showToast('As senhas não coincidem!', 'error');
-        return false;
-    }
-    if (password.length < 6) {
-        showToast('Senha deve ter no mínimo 6 caracteres!', 'error');
-        return false;
-    }
-
-    showLoading();
+// Photo handlers
+async function handleAlunoPhoto(inp) {
+    if (!inp.files?.[0]) return;
     try {
-        // Verificar duplicidade
-        const existing = await db.collection('system').doc('config').get();
-        if (existing.exists && existing.data().adminCreated) {
-            showToast('Administrador já existe! Faça login.', 'error');
-            hideLoading();
-            showLoginPage();
-            return false;
-        }
-
-        // Comprimir insígnia se fornecida
-        let insigniaB64 = null;
-        const insigniaFile = document.getElementById('setupInsigniaFile').files[0];
-        if (insigniaFile) {
-            try {
-                insigniaB64 = await compressInsignia(insigniaFile, 200, 0.8);
-            } catch (imgErr) {
-                showToast('Aviso: ' + imgErr.message + '. Prosseguindo sem insígnia.', 'warning');
-            }
-        }
-
-        // Criar utilizador Firebase Auth
-        const userCredential = await auth.createUserWithEmailAndPassword(email, password);
-        const uid = userCredential.user.uid;
-
-        // Salvar perfil do admin
-        await db.collection('users').doc(uid).set({
-            name: name,
-            email: email,
-            phone: phone,
-            role: 'super_admin',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            active: true,
-            photo: null
-        });
-
-        // Salvar config do sistema
-        await db.collection('system').doc('config').set({
-            adminCreated: true,
-            adminUid: uid,
-            adminEmail: email,
-            systemName: 'SGE-NG',
-            createdAt: firebase.firestore.FieldValue.serverTimestamp(),
-            insigniaBase64: insigniaB64,
-            version: '1.0.0'
-        });
-
-        STATE.insigniaBase64 = insigniaB64;
-        showToast('Administrador Geral criado com sucesso!', 'success');
-        hideLoading();
-    } catch (error) {
-        hideLoading();
-        console.error('Setup error:', error);
-        if (error.code === 'auth/email-already-in-use') {
-            showToast('Este email já está em uso!', 'error');
-        } else if (error.code === 'auth/weak-password') {
-            showToast('Senha muito fraca! Use pelo menos 6 caracteres.', 'error');
-        } else if (error.code === 'auth/invalid-email') {
-            showToast('Email inválido!', 'error');
-        } else {
-            showToast('Erro: ' + error.message, 'error');
-        }
-    }
-    return false;
+        showToast('Comprimindo foto...', 'info');
+        const b64 = await compressImage(inp.files[0], 400, 0.6);
+        document.getElementById('alunoPhotoB64').value = b64;
+        document.getElementById('alunoPhotoPreview').innerHTML = `<img src="${b64}">`;
+        showToast('Foto OK!', 'success');
+    } catch(e) { showToast(e.message, 'error'); }
+}
+async function handleFuncPhoto(inp) {
+    if (!inp.files?.[0]) return;
+    try {
+        const b64 = await compressImage(inp.files[0], 400, 0.6);
+        document.getElementById('funcPhotoB64').value = b64;
+        document.getElementById('funcPhotoPreview').innerHTML = `<img src="${b64}">`;
+        showToast('Foto OK!', 'success');
+    } catch(e) { showToast(e.message, 'error'); }
+}
+async function handleProfPhoto(inp) {
+    if (!inp.files?.[0]) return;
+    try {
+        const b64 = await compressImage(inp.files[0], 400, 0.6);
+        document.getElementById('profPhotoB64').value = b64;
+        document.getElementById('profPhotoPreview').innerHTML = `<img src="${b64}">`;
+        showToast('Foto OK!', 'success');
+    } catch(e) { showToast(e.message, 'error'); }
+}
+async function handlePerfilPhoto(inp) {
+    if (!inp.files?.[0]) return;
+    try {
+        const b64 = await compressImage(inp.files[0], 300, 0.5);
+        document.getElementById('perfilPhotoPreview').innerHTML = `<img src="${b64}">`;
+        await db.collection('users').doc(STATE.userProfile.id).update({photo: b64});
+        STATE.userProfile.photo = b64;
+        showToast('Foto actualizada!', 'success');
+    } catch(e) { showToast(e.message, 'error'); }
 }
 
 // ========================================
-// FIX 4: FOTO DO ALUNO - Handler melhorado
+// 3. CÁLCULOS DE NOTAS (PADRÃO ANGOLA)
 // ========================================
-async function handleAlunoPhoto(input) {
-    if (!input.files || !input.files[0]) return;
-    const file = input.files[0];
-
-    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-    showToast(`Processando foto (${sizeMB}MB)...`, 'info');
-
-    try {
-        const compressed = await compressImage(file, 400, 0.6);
-        document.getElementById('alunoPhotoB64').value = compressed;
-        document.getElementById('alunoPhotoPreview').innerHTML = `<img src="${compressed}">`;
-
-        const compressedSizeKB = Math.round(compressed.length * 0.75 / 1024);
-        showToast(`Foto comprimida: ${sizeMB}MB → ${compressedSizeKB}KB ✓`, 'success');
-    } catch (err) {
-        showToast('Erro na foto: ' + err.message, 'error');
-        // Limpar preview
-        document.getElementById('alunoPhotoB64').value = '';
-        document.getElementById('alunoPhotoPreview').innerHTML = '<div class="placeholder"><i class="fas fa-camera"></i><br>Foto<br>(até 15MB)</div>';
-    }
+function calcMT(mac, npt) {
+    const m = parseFloat(mac), n = parseFloat(npt);
+    if (isNaN(m) || isNaN(n)) return '';
+    return Math.round(((m + n) / 2) * 10) / 10;
+}
+function calcMT3(mt1, mt2, mac3) {
+    const a = parseFloat(mt1), b = parseFloat(mt2), c = parseFloat(mac3);
+    if (isNaN(a) || isNaN(b) || isNaN(c)) return '';
+    return Math.round(((a + b + c) / 3) * 10) / 10;
+}
+// Terminal (6ª,9ª,12ª,13ª): MF = MT3*60% + Exame*40%
+function calcMFTerminal(mt3, exame) {
+    const m = parseFloat(mt3), e = parseFloat(exame);
+    if (isNaN(m) || isNaN(e)) return '';
+    return Math.round((m * 0.6 + e * 0.4) * 10) / 10;
+}
+// Normal: MF = (MT1+MT2+MAC3)/3
+function calcMFNormal(mt1, mt2, mac3) {
+    return calcMT3(mt1, mt2, mac3);
+}
+function getNotaObs(mt, notaMin, genero) {
+    if (mt === '' || mt === null || mt === undefined) return '';
+    const v = parseFloat(mt);
+    if (isNaN(v)) return '';
+    const s = genero === 'F' ? 'a' : 'o';
+    return v >= notaMin ? `Aprovad${s}` : `Reprovad${s}`;
+}
+function numberToWords(n) {
+    if (n === null || n === undefined || isNaN(n)) return '';
+    n = Math.round(n);
+    const w = ['Zero','Um','Dois','Três','Quatro','Cinco','Seis','Sete','Oito','Nove','Dez',
+        'Onze','Doze','Treze','Catorze','Quinze','Dezasseis','Dezassete','Dezoito','Dezanove','Vinte'];
+    return (n >= 0 && n <= 20 ? w[n] : String(n)) + ' valores';
 }
 
 // ========================================
-// FIX 5: FOTO DO FUNCIONÁRIO - Handler melhorado
+// 4. ALUNOS - CARREGAR SEM INDEX
 // ========================================
-async function handleFuncPhoto(input) {
-    if (!input.files || !input.files[0]) return;
-    const file = input.files[0];
-    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-    showToast(`Processando foto (${sizeMB}MB)...`, 'info');
-
+async function loadAlunosTable() {
+    const c = document.getElementById('alunosTableContainer');
+    if (!c) return;
     try {
-        const compressed = await compressImage(file, 400, 0.6);
-        document.getElementById('funcPhotoB64').value = compressed;
-        document.getElementById('funcPhotoPreview').innerHTML = `<img src="${compressed}">`;
-        const compressedSizeKB = Math.round(compressed.length * 0.75 / 1024);
-        showToast(`Foto comprimida: ${sizeMB}MB → ${compressedSizeKB}KB ✓`, 'success');
-    } catch (err) {
-        showToast('Erro na foto: ' + err.message, 'error');
-        document.getElementById('funcPhotoB64').value = '';
-        document.getElementById('funcPhotoPreview').innerHTML = '<div class="placeholder"><i class="fas fa-camera"></i><br>Foto</div>';
-    }
+        let alunos = await FS_year('alunos');
+        alunos.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        const fC = document.getElementById('filterAlunoClasse')?.value;
+        const fT = document.getElementById('filterAlunoTurma')?.value;
+        const fE = document.getElementById('filterAlunoEstado')?.value;
+        if (fC) alunos = alunos.filter(a => a.classeId === fC);
+        if (fT) alunos = alunos.filter(a => a.turmaId === fT);
+        if (fE) alunos = alunos.filter(a => a.estado === fE);
+        STATE.cache.alunos = alunos;
+        renderAlunosTableData(alunos);
+    } catch(e) { c.innerHTML = `<p style="color:var(--danger);">Erro: ${e.message}</p>`; }
 }
 
 // ========================================
-// FIX 6: FOTO DO PROFESSOR - Handler melhorado
+// 5. NOTAS - CARREGAR SEM INDEX
 // ========================================
-async function handleProfPhoto(input) {
-    if (!input.files || !input.files[0]) return;
-    const file = input.files[0];
-    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-    showToast(`Processando foto (${sizeMB}MB)...`, 'info');
+async function loadNotasGrid() {
+    const c = document.getElementById('notasGridContainer');
+    if (!c) return;
+    const classeId = document.getElementById('notaClasse')?.value;
+    const turmaId = document.getElementById('notaTurma')?.value;
+    const discId = document.getElementById('notaDisciplina')?.value;
+    const trim = document.getElementById('notaTrimestre')?.value;
 
-    try {
-        const compressed = await compressImage(file, 400, 0.6);
-        document.getElementById('profPhotoB64').value = compressed;
-        document.getElementById('profPhotoPreview').innerHTML = `<img src="${compressed}">`;
-        const compressedSizeKB = Math.round(compressed.length * 0.75 / 1024);
-        showToast(`Foto comprimida: ${sizeMB}MB → ${compressedSizeKB}KB ✓`, 'success');
-    } catch (err) {
-        showToast('Erro na foto: ' + err.message, 'error');
-        document.getElementById('profPhotoB64').value = '';
-        document.getElementById('profPhotoPreview').innerHTML = '<div class="placeholder"><i class="fas fa-camera"></i><br>Foto</div>';
-    }
-}
-
-// ========================================
-// FIX 7: FOTO DO PERFIL - Handler melhorado
-// ========================================
-async function handlePerfilPhoto(input) {
-    if (!input.files || !input.files[0]) return;
-    const file = input.files[0];
-    const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-    showToast(`Processando foto (${sizeMB}MB)...`, 'info');
-
-    try {
-        const compressed = await compressImage(file, 300, 0.5);
-        document.getElementById('perfilPhotoPreview').innerHTML = `<img src="${compressed}">`;
-        await db.collection('users').doc(STATE.userProfile.id).update({ photo: compressed });
-        STATE.userProfile.photo = compressed;
-        showToast(`Foto actualizada: ${sizeMB}MB → ${Math.round(compressed.length * 0.75 / 1024)}KB ✓`, 'success');
-    } catch (err) {
-        showToast('Erro na foto: ' + err.message, 'error');
-    }
-}
-
-// ========================================
-// FIX 8: INSÍGNIA no setup - Preview melhorado
-// ========================================
-function previewInsignia(input) {
-    if (input.files && input.files[0]) {
-        const file = input.files[0];
-        const sizeMB = (file.size / (1024 * 1024)).toFixed(1);
-
-        if (file.size > 5 * 1024 * 1024) {
-            showToast('Insígnia muito grande! Máximo 5MB. Será comprimida.', 'warning');
-        }
-
-        const reader = new FileReader();
-        reader.onload = (e) => {
-            document.getElementById('insigniaPreview').innerHTML = `
-                <img src="${e.target.result}" style="max-width:100px;max-height:100px;border:1px solid var(--gray-300);border-radius:4px;">
-                <p style="font-size:11px;color:var(--gray-500);margin-top:4px;">Tamanho original: ${sizeMB}MB (será comprimida)</p>
-            `;
-        };
-        reader.readAsDataURL(file);
-    }
-}
-
-// ========================================
-// FIX 9: SAVE ALUNO - Tratamento de erros robusto
-// ========================================
-const _originalSaveAluno = saveAluno;
-saveAluno = async function() {
-    const editId = document.getElementById('alunoEditId')?.value;
-    const classeId = document.getElementById('alunoClasse')?.value;
-    const turmaId = document.getElementById('alunoTurma')?.value;
-    const nome = document.getElementById('alunoNome')?.value?.trim();
-
-    if (!nome) { showToast('Nome do aluno é obrigatório!', 'error'); return; }
-    if (!classeId) { showToast('Selecione uma classe!', 'error'); return; }
-    if (!turmaId) { showToast('Selecione uma turma!', 'error'); return; }
-    if (!STATE.currentYearId) { showToast('Nenhum ano letivo activo!', 'error'); return; }
-
-    // Verificar tamanho da foto antes de salvar
-    const photo = document.getElementById('alunoPhotoB64')?.value || null;
-    if (photo && photo.length > 900000) {
-        showToast('Foto ainda muito grande. Recomprimindo...', 'info');
-        try {
-            // Criar file fake para recomprimir
-            const response = await fetch(photo);
-            const blob = await response.blob();
-            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
-            const recompressed = await compressImage(file, 300, 0.3);
-            document.getElementById('alunoPhotoB64').value = recompressed;
-        } catch (e) {
-            document.getElementById('alunoPhotoB64').value = '';
-            showToast('Foto removida por ser muito grande. Aluno será salvo sem foto.', 'warning');
-        }
-    }
-
-    try {
-        await _originalSaveAluno();
-    } catch (err) {
-        hideLoading();
-        console.error('Erro ao salvar aluno:', err);
-        if (err.message && err.message.includes('exceeds the maximum')) {
-            showToast('Dados muito grandes! Tente com uma foto menor ou sem foto.', 'error');
-        } else {
-            showToast('Erro ao salvar: ' + err.message, 'error');
-        }
-    }
-};
-
-// ========================================
-// FIX 10: SAVE FUNCIONÁRIO - Tratamento de erros
-// ========================================
-const _originalSaveFuncionario = saveFuncionario;
-saveFuncionario = async function() {
-    const photo = document.getElementById('funcPhotoB64')?.value || null;
-    if (photo && photo.length > 900000) {
-        showToast('Recomprimindo foto...', 'info');
-        try {
-            const response = await fetch(photo);
-            const blob = await response.blob();
-            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
-            const recompressed = await compressImage(file, 300, 0.3);
-            document.getElementById('funcPhotoB64').value = recompressed;
-        } catch (e) {
-            document.getElementById('funcPhotoB64').value = '';
-        }
-    }
-
-    try {
-        await _originalSaveFuncionario();
-    } catch (err) {
-        hideLoading();
-        if (err.message && err.message.includes('exceeds')) {
-            showToast('Dados muito grandes! Tente com foto menor.', 'error');
-        } else {
-            showToast('Erro: ' + err.message, 'error');
-        }
-    }
-};
-
-// ========================================
-// FIX 11: SAVE PROFESSOR - Tratamento de erros
-// ========================================
-const _originalSaveProfessor = saveProfessor;
-saveProfessor = async function() {
-    const photo = document.getElementById('profPhotoB64')?.value || null;
-    if (photo && photo.length > 900000) {
-        showToast('Recomprimindo foto...', 'info');
-        try {
-            const response = await fetch(photo);
-            const blob = await response.blob();
-            const file = new File([blob], 'photo.jpg', { type: 'image/jpeg' });
-            const recompressed = await compressImage(file, 300, 0.3);
-            document.getElementById('profPhotoB64').value = recompressed;
-        } catch (e) {
-            document.getElementById('profPhotoB64').value = '';
-        }
-    }
-
-    try {
-        await _originalSaveProfessor();
-    } catch (err) {
-        hideLoading();
-        if (err.message && err.message.includes('exceeds')) {
-            showToast('Dados muito grandes! Tente com foto menor.', 'error');
-        } else {
-            showToast('Erro: ' + err.message, 'error');
-        }
-    }
-};
-
-// ========================================
-// FIX 12: DIRECTOR SAVE - Foto + Erros Auth
-// ========================================
-async function saveDirector(schoolId) {
-    const name = document.getElementById('dirName').value.trim();
-    const email = document.getElementById('dirEmail').value.trim();
-    const phone = document.getElementById('dirPhone').value.trim();
-    const bi = document.getElementById('dirBI').value.trim();
-    const password = document.getElementById('dirPassword').value;
-    const confirm_pw = document.getElementById('dirPasswordConfirm').value;
-
-    if (!name || !email || !phone || !password) {
-        showToast('Preencha todos os campos obrigatórios!', 'error');
-        return;
-    }
-    if (password !== confirm_pw) {
-        showToast('As senhas não coincidem!', 'error');
-        return;
-    }
-    if (password.length < 6) {
-        showToast('Senha deve ter no mínimo 6 caracteres!', 'error');
+    if (!classeId || !turmaId || !discId) {
+        c.innerHTML = '<div class="empty-state"><i class="fas fa-star"></i><h3>Selecione todos os filtros</h3></div>';
+        const btn = document.getElementById('btnSaveNotas'); if (btn) btn.style.display = 'none';
         return;
     }
 
-    showLoading();
+    const co = document.getElementById('notaClasse').selectedOptions[0];
+    const cn = co?.dataset?.nome || '';
+    const nm = parseInt(co?.dataset?.notamax) || 20;
+    const nmin = nm === 10 ? 5 : 10;
+    const dn = document.getElementById('notaDisciplina').selectedOptions[0]?.dataset?.nome || '';
+    const tn = document.getElementById('notaTurma').selectedOptions[0]?.dataset?.nome || '';
+    const tl = trim + 'º Trimestre';
+    const isT = ['6ª Classe','9ª Classe','12ª Classe','13ª Classe'].includes(cn);
+    const tOpen = isTrimesterOpen(tl);
+    const canE = tOpen && ['super_admin','diretor','subdiretor_pedagogico','professor'].includes(STATE.userProfile?.role);
+
+    document.getElementById('notasGridTitle').textContent = `${cn} - ${tn} | ${dn} | ${tl}`;
+    c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+
     try {
-        // Criar utilizador usando app secundária
-        let secondaryApp;
-        try {
-            secondaryApp = firebase.initializeApp(firebaseConfig, 'Dir_' + Date.now());
-        } catch (initErr) {
-            // App pode já existir, tentar com nome diferente
-            secondaryApp = firebase.initializeApp(firebaseConfig, 'Dir_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5));
-        }
+        const allA = await FS_year('alunos');
+        const alunos = allA.filter(a => a.turmaId === turmaId && a.estado === 'Ativo')
+                           .sort((a, b) => (a.name || '').localeCompare(b.name || ''));
 
-        const secondaryAuth = secondaryApp.auth();
+        const allN = await FS_year('notas');
+        const nMap = {};
+        allN.filter(n => n.disciplinaId === discId && n.turmaId === turmaId)
+            .forEach(n => { nMap[n.alunoId] = n; });
 
-        let uid;
-        try {
-            const userCredential = await secondaryAuth.createUserWithEmailAndPassword(email, password);
-            uid = userCredential.user.uid;
-            await secondaryAuth.signOut();
-        } catch (authErr) {
-            if (authErr.code === 'auth/email-already-in-use') {
-                // Tentar encontrar o UID existente
-                showToast('Email já em uso. Tentando vincular...', 'info');
-                const usersSnap = await db.collection('users').where('email', '==', email).limit(1).get();
-                if (!usersSnap.empty) {
-                    uid = usersSnap.docs[0].id;
-                } else {
-                    hideLoading();
-                    try { secondaryApp.delete(); } catch(e) {}
-                    showToast('Email já em uso noutro sistema. Use outro email.', 'error');
-                    return;
-                }
-            } else {
-                throw authErr;
-            }
-        }
-
-        try { secondaryApp.delete(); } catch(e) {}
-
-        if (!uid) {
-            hideLoading();
-            showToast('Erro ao criar credenciais.', 'error');
+        if (!alunos.length) {
+            c.innerHTML = '<div class="empty-state"><i class="fas fa-users"></i><h3>Nenhum aluno ativo</h3></div>';
+            const btn = document.getElementById('btnSaveNotas'); if (btn) btn.style.display = 'none';
             return;
         }
 
-        // Salvar perfil do director
-        await db.collection('users').doc(uid).set({
-            name: name,
-            email: email,
-            phone: phone,
-            bi: bi,
-            role: 'diretor',
-            schoolId: schoolId,
-            active: true,
-            createdAt: firebase.firestore.FieldValue.serverTimestamp()
-        }, { merge: true });
+        const IS = 'width:46px;text-align:center;padding:3px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;';
+        let hc = '';
+        if (trim === '3' && isT) {
+            hc = '<th class="center" style="min-width:46px;">MAC3</th><th class="center" style="background:#e0f2fe;">MT1</th><th class="center" style="background:#e0f2fe;">MT2</th><th class="center" style="background:#fef3c7;">MT3</th><th class="center" style="background:#fce7f3;">Exame</th><th class="center" style="background:#dcfce7;">MF</th><th class="center">Obs.</th>';
+        } else if (trim === '3') {
+            hc = '<th class="center" style="min-width:46px;">MAC3</th><th class="center" style="background:#e0f2fe;">MT1</th><th class="center" style="background:#e0f2fe;">MT2</th><th class="center" style="background:#dcfce7;">MF</th><th class="center">Obs.</th>';
+        } else {
+            hc = '<th class="center" style="min-width:46px;">MAC</th><th class="center" style="min-width:46px;">NPT</th><th class="center" style="background:#dcfce7;">MT</th><th class="center">Obs.</th>';
+        }
 
-        // Actualizar escola com info do director
-        await db.collection('schools').doc(schoolId).update({
-            directorId: uid,
-            directorName: name,
-            directorEmail: email,
-            directorPhone: phone
+        let h = `<div class="table-container"><table><thead><tr><th>#</th><th>Nome</th>${hc}</tr></thead><tbody>`;
+
+        alunos.forEach((a, i) => {
+            const n = nMap[a.id] || {};
+            h += `<tr><td>${i+1}</td><td class="student-name">${a.name}</td>`;
+
+            if (trim === '3' && isT) {
+                const mac3=n.mac3??'', mt1=n.mt1??'', mt2=n.mt2??'', ex=n.exame??'';
+                const mt3v=calcMT3(mt1,mt2,mac3), mf=calcMFTerminal(mt3v,ex), obs=getNotaObs(mf,nmin,a.genero);
+                const mfs = mf!==''&&parseFloat(mf)>=nmin?'color:#059669;font-weight:700;':mf!==''?'color:#dc2626;font-weight:700;':'';
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="mac3" value="${mac3}" min="0" max="${nm}" style="${IS}" ${canE?'':'disabled'} onchange="rcT(this,'${a.id}',${nm},${nmin})"></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input type="number" data-aluno="${a.id}" data-field="mt1" value="${mt1}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input type="number" data-aluno="${a.id}" data-field="mt2" value="${mt2}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#fefce8;"><span data-aluno="${a.id}" data-field="mt3d">${mt3v}</span></td>`;
+                h += `<td class="center" style="background:#fdf2f8;"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="exame" value="${ex}" min="0" max="${nm}" style="${IS}background:#fdf2f8;" ${canE?'':'disabled'} onchange="rcT(this,'${a.id}',${nm},${nmin})"></td>`;
+                h += `<td class="center" style="background:#f0fdf4;"><span data-aluno="${a.id}" data-field="mfd" style="${mfs}">${mf}</span></td>`;
+                h += `<td class="center"><span data-aluno="${a.id}" data-field="obsd" style="font-size:10px;" class="${obs.includes('Aprov')?'badge-status badge-approved':obs.includes('Reprov')?'badge-status badge-failed':''}">${obs}</span></td>`;
+            } else if (trim === '3') {
+                const mac3=n.mac3??'', mt1=n.mt1??'', mt2=n.mt2??'';
+                const mf=calcMFNormal(mt1,mt2,mac3), obs=getNotaObs(mf,nmin,a.genero);
+                const mfs = mf!==''&&parseFloat(mf)>=nmin?'color:#059669;font-weight:700;':mf!==''?'color:#dc2626;font-weight:700;':'';
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="mac3" value="${mac3}" min="0" max="${nm}" style="${IS}" ${canE?'':'disabled'} onchange="rcN(this,'${a.id}',${nm},${nmin})"></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input type="number" data-aluno="${a.id}" data-field="mt1" value="${mt1}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input type="number" data-aluno="${a.id}" data-field="mt2" value="${mt2}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#f0fdf4;"><span data-aluno="${a.id}" data-field="mfd" style="${mfs}">${mf}</span></td>`;
+                h += `<td class="center"><span data-aluno="${a.id}" data-field="obsd" style="font-size:10px;" class="${obs.includes('Aprov')?'badge-status badge-approved':obs.includes('Reprov')?'badge-status badge-failed':''}">${obs}</span></td>`;
+            } else {
+                const mac=n[`mac${trim}`]??'', npt=n[`npt${trim}`]??'';
+                const mt=calcMT(mac,npt), obs=getNotaObs(mt,nmin,a.genero);
+                const mts = mt!==''&&parseFloat(mt)>=nmin?'color:#059669;font-weight:700;':mt!==''?'color:#dc2626;font-weight:700;':'';
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="mac${trim}" value="${mac}" min="0" max="${nm}" style="${IS}" ${canE?'':'disabled'} onchange="recalcRow(this,'${a.id}','${trim}',${nm})"></td>`;
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="npt${trim}" value="${npt}" min="0" max="${nm}" style="${IS}" ${canE?'':'disabled'} onchange="recalcRow(this,'${a.id}','${trim}',${nm})"></td>`;
+                h += `<td class="center" style="background:#f0fdf4;"><span data-aluno="${a.id}" data-field="mt${trim}display" style="${mts}">${mt}</span></td>`;
+                h += `<td class="center"><span data-aluno="${a.id}" data-field="obs${trim}display" style="font-size:10px;" class="${obs.includes('Aprov')?'badge-status badge-approved':obs.includes('Reprov')?'badge-status badge-failed':''}">${obs}</span></td>`;
+            }
+            h += '</tr>';
         });
 
-        showToast('Director cadastrado com sucesso!', 'success');
-        closeModal('directorModal');
-        if (typeof loadSchoolsTable === 'function') await loadSchoolsTable();
-    } catch (e) {
-        console.error('Save director error:', e);
-        showToast('Erro: ' + e.message, 'error');
-    }
+        h += '</tbody></table></div>';
+        if (!tOpen) h += '<div style="margin-top:10px;padding:10px;background:#fef3c7;border-radius:8px;font-size:12px;"><i class="fas fa-lock"></i> Trimestre fechado.</div>';
+        c.innerHTML = h;
+        const btn = document.getElementById('btnSaveNotas'); if (btn) btn.style.display = canE ? 'inline-flex' : 'none';
+        STATE.cache.notasContext = {classeId,turmaId,disciplinaId:discId,trimestre:trim,classeNome:cn,discNome:dn,turmaNome:tn,notaMax:nm,isTerminal:isT,notaMin:nmin,notasMap:nMap,alunos};
+    } catch(e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+// Recalc helpers
+function rcT(inp,aid,nm,nmin){
+    const v=parseFloat(inp.value);if(v<0)inp.value=0;if(v>nm)inp.value=nm;
+    const g=f=>document.querySelector(`[data-aluno="${aid}"][data-field="${f}"]`);
+    const mac3=g('mac3')?.value||'',mt1=g('mt1')?.value||'',mt2=g('mt2')?.value||'',ex=g('exame')?.value||'';
+    const mt3=calcMT3(mt1,mt2,mac3),mf=calcMFTerminal(mt3,ex);
+    const s3=g('mt3d'),sm=g('mfd'),so=g('obsd');
+    if(s3)s3.textContent=mt3;
+    if(sm){sm.textContent=mf;sm.style.color=mf!==''&&parseFloat(mf)>=nmin?'#059669':'#dc2626';sm.style.fontWeight='700';}
+    if(so){const al=STATE.cache.notasContext?.alunos?.find(a=>a.id===aid);const o=getNotaObs(mf,nmin,al?.genero);so.textContent=o;so.className=o.includes('Aprov')?'badge-status badge-approved':o.includes('Reprov')?'badge-status badge-failed':'';}
+}
+function rcN(inp,aid,nm,nmin){
+    const v=parseFloat(inp.value);if(v<0)inp.value=0;if(v>nm)inp.value=nm;
+    const g=f=>document.querySelector(`[data-aluno="${aid}"][data-field="${f}"]`);
+    const mac3=g('mac3')?.value||'',mt1=g('mt1')?.value||'',mt2=g('mt2')?.value||'';
+    const mf=calcMFNormal(mt1,mt2,mac3);
+    const sm=g('mfd'),so=g('obsd');
+    if(sm){sm.textContent=mf;sm.style.color=mf!==''&&parseFloat(mf)>=nmin?'#059669':'#dc2626';sm.style.fontWeight='700';}
+    if(so){const al=STATE.cache.notasContext?.alunos?.find(a=>a.id===aid);const o=getNotaObs(mf,nmin,al?.genero);so.textContent=o;so.className=o.includes('Aprov')?'badge-status badge-approved':o.includes('Reprov')?'badge-status badge-failed':'';}
+}
+
+// ========================================
+// 6. BOLETINS - SEM INDEX
+// ========================================
+async function generateBoletins() {
+    const c = document.getElementById('boletinsContainer');
+    const yid = document.getElementById('boletimAno')?.value;
+    const cid = document.getElementById('boletimClasse')?.value;
+    const tid = document.getElementById('boletimTurma')?.value;
+    const trim = document.getElementById('boletimTrimestre')?.value;
+    if (!yid||!cid) { showToast('Selecione ano e classe!','error'); return; }
+    const co = document.getElementById('boletimClasse').selectedOptions[0];
+    const cn=co?.dataset?.nome||'',nm=parseInt(co?.dataset?.notamax)||20,nmin=nm===10?5:10,curso=co?.dataset?.curso||'';
+    c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+    try {
+        const sid = STATE.currentSchool.id;
+        let alunos = await FS_getAll(FS_yearPathCustom(sid,yid,'alunos'));
+        alunos = alunos.filter(a => a.classeId === cid);
+        if (tid) alunos = alunos.filter(a => a.turmaId === tid);
+        alunos.sort((a,b) => (a.name||'').localeCompare(b.name||''));
+
+        let discs = await FS_getAll(FS_yearPathCustom(sid,yid,'disciplinas'));
+        discs = discs.filter(d => d.classeId === cid).sort((a,b) => (a.ordem||0)-(b.ordem||0));
+
+        const allN = await FS_getAll(FS_yearPathCustom(sid,yid,'notas'));
+        const nMap = {};
+        allN.forEach(n => { nMap[`${n.alunoId}_${n.disciplinaId}`] = n; });
+
+        const yDoc = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yid).get();
+        const yd = yDoc.data();
+        STATE.cache.boletinsData = {alunos,discs,notasMap:nMap,classeNome:cn,curso,trimestre:trim,notaMax:nm,notaMin:nmin,yearData:yd};
+
+        if (!alunos.length) { c.innerHTML = '<div class="empty-state"><i class="fas fa-users"></i><h3>Nenhum aluno</h3></div>'; return; }
+
+        let h = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">';
+        alunos.forEach(a => { h += buildBoletimCard(a,discs,nMap,cn,curso,trim,nm,nmin,yd); });
+        h += '</div>';
+        c.innerHTML = h;
+    } catch(e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+function buildBoletimCard(a,discs,nMap,cn,curso,trim,nm,nmin,yd) {
+    let rows = '';
+    discs.forEach(d => {
+        const n = nMap[`${a.id}_${d.id}`]||{};
+        const mac=n[`mac${trim}`]??'',npt=n[`npt${trim}`]??'',mt=n[`mt${trim}`]??calcMT(mac,npt);
+        const neg = mt!==''&&parseFloat(mt)<nmin;
+        rows += `<tr><td style="border:1px solid #ccc;padding:2px 4px;font-size:9px;">${d.nome}</td><td style="border:1px solid #ccc;padding:2px;text-align:center;font-size:9px;">${mac}</td><td style="border:1px solid #ccc;padding:2px;text-align:center;font-size:9px;">${npt}</td><td style="border:1px solid #ccc;padding:2px;text-align:center;font-size:9px;${neg?'color:#dc2626;':'color:#059669;'}font-weight:700;">${mt}</td></tr>`;
+    });
+    return `<div class="card" style="font-size:10px;"><div class="card-body" style="padding:10px;">
+        <div style="text-align:center;margin-bottom:6px;">${getInsigniaHTML(30)}<div style="font-size:7px;text-transform:uppercase;margin-top:2px;">República de Angola</div><div style="font-size:7px;">Ministério da Educação</div><div style="font-size:8px;font-weight:700;margin-top:2px;">${STATE.currentSchool?.name||''}</div><div style="font-size:9px;font-weight:700;margin-top:4px;border-bottom:1px solid #000;display:inline-block;">BOLETIM - ${trim}º Trimestre</div></div>
+        <div style="font-size:8px;margin:4px 0;"><strong>Aluno:</strong> <span style="color:#ce1126;font-weight:700;">${a.name}</span><br><strong>Classe:</strong> ${cn} | <strong>Turma:</strong> ${a.turmaNome||''} | <strong>Ano:</strong> ${yd?.ano||''}${curso?' | <strong>Curso:</strong> '+curso:''}</div>
+        <table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#f1f5f9;"><th style="border:1px solid #999;padding:2px;text-align:left;font-size:8px;">Disciplina</th><th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;width:28px;">MAC</th><th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;width:28px;">NPT</th><th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;width:28px;">MT</th></tr></thead><tbody>${rows}</tbody></table>
+        <div style="margin-top:8px;text-align:center;"><div style="border-top:1px solid #000;width:60%;margin:12px auto 0;"></div><div style="font-size:7px;">O(A) Director(a)</div><div style="font-size:8px;font-weight:600;">${STATE.currentSchool?.directorName||''}</div></div>
+    </div></div>`;
+}
+
+// ========================================
+// 7. PRESENÇAS - SEM INDEX
+// ========================================
+async function loadPresencasAlunos() {
+    const c = document.getElementById('presencasContainer');
+    const dt = document.getElementById('presData')?.value;
+    const tid = document.getElementById('presTurma')?.value;
+    if (!dt||!tid) { c.innerHTML = '<div class="empty-state"><i class="fas fa-clipboard-check"></i><h3>Selecione filtros</h3></div>'; document.getElementById('presFooter').style.display='none'; return; }
+    c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+    try {
+        const allA = await FS_year('alunos');
+        const alunos = allA.filter(a => a.turmaId===tid&&a.estado==='Ativo').sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+        const allP = await FS_year('presencas');
+        const pMap = {};
+        allP.filter(p => p.turmaId===tid&&p.data===dt).forEach(p => { pMap[p.alunoId]={docId:p.id,...p}; });
+        STATE.cache.presencasContext = {data:dt,classeId:document.getElementById('presClasse')?.value,turmaId:tid,alunos,presMap:pMap};
+        document.getElementById('presencaTitle').textContent = `Presenças - ${dt}`;
+        renderPresencasGrid(alunos,pMap);
+        document.getElementById('presFooter').style.display='flex';
+    } catch(e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+// ========================================
+// 8. PAUTAS - SEM INDEX
+// ========================================
+async function loadPautaView() {
+    const c = document.getElementById('pautaViewContainer');
+    const cid=document.getElementById('pautaClasse')?.value,tid=document.getElementById('pautaTurma')?.value;
+    const tipo=document.getElementById('pautaTipo')?.value,trim=document.getElementById('pautaTrimestre')?.value;
+    if(tipo==='anual')document.getElementById('pautaTrimGroup').style.display='none';else document.getElementById('pautaTrimGroup').style.display='block';
+    if(!cid||!tid){c.innerHTML='<div class="empty-state"><h3>Selecione classe e turma</h3></div>';return;}
+    const co=document.getElementById('pautaClasse').selectedOptions[0];
+    const cn=co?.dataset?.nome||'',tn=document.getElementById('pautaTurma').selectedOptions[0]?.dataset?.nome||'';
+    const nm=parseInt(co?.dataset?.notamax)||20,nmin=nm===10?5:10;
+    const isT=['6ª Classe','9ª Classe','12ª Classe','13ª Classe'].includes(cn);
+    c.innerHTML='<div class="spinner" style="margin:20px auto;"></div>';
+    try {
+        let alunos=(await FS_year('alunos')).filter(a=>a.turmaId===tid).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+        let discs=(await FS_year('disciplinas')).filter(d=>d.classeId===cid).sort((a,b)=>(a.ordem||0)-(b.ordem||0));
+        const allN=await FS_year('notas');const nMap={};allN.filter(n=>n.turmaId===tid).forEach(n=>{nMap[`${n.alunoId}_${n.disciplinaId}`]=n;});
+
+        let h=`<div id="pautaPrintArea" style="font-family:'Inter',sans-serif;font-size:11px;">
+        <div style="text-align:center;margin-bottom:16px;">${getInsigniaHTML(60)}<h4 style="margin-top:8px;text-transform:uppercase;">REPÚBLICA DE ANGOLA</h4><h5>MINISTÉRIO DA EDUCAÇÃO</h5><p style="font-weight:600;margin-top:6px;">${STATE.currentSchool?.name||''}</p><h3 style="margin-top:10px;text-transform:uppercase;border-bottom:2px solid #000;display:inline-block;padding-bottom:4px;">PAUTA ${tipo==='anual'?'ANUAL':'DO '+trim+'º TRIMESTRE'}</h3><div style="margin-top:8px;font-size:12px;"><strong>Classe:</strong> ${cn} | <strong>Turma:</strong> ${tn} | <strong>Ano:</strong> ${STATE.currentYear?.ano||''}${co?.dataset?.curso?' | <strong>Curso:</strong> '+co.dataset.curso:''}</div></div>`;
+
+        h+='<table style="width:100%;border-collapse:collapse;font-size:10px;"><thead><tr style="background:#f1f5f9;"><th style="border:1px solid #999;padding:4px;">#</th><th style="border:1px solid #999;padding:4px;text-align:left;">Nome</th>';
+        discs.forEach(d=>{h+=`<th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;" title="${d.nome}">${d.abreviatura||d.nome.substring(0,5)}</th>`;});
+        h+='<th style="border:1px solid #999;padding:4px;">Resultado</th></tr></thead><tbody>';
+
+        alunos.forEach((a,i)=>{
+            const act=a.estado==='Ativo';
+            h+=`<tr style="${!act?'opacity:0.5;':''}"><td style="border:1px solid #ccc;padding:3px;text-align:center;">${i+1}</td><td style="border:1px solid #ccc;padding:3px;color:#ce1126;font-weight:600;">${a.name}</td>`;
+            let ap=true,ha=true,nc=0,ns=[];
+            discs.forEach(d=>{
+                const k=`${a.id}_${d.id}`,n=nMap[k];
+                let v;
+                if(tipo==='trimestral'){if(trim==='3')v=isT?n?.mediaFinal:n?.mt3??n?.mediaFinal;else v=n?.[`mt${trim}`];}else v=n?.mediaFinal;
+                const ds=v!=null?v:'',neg=ds!==''&&parseFloat(ds)<nmin;
+                if(neg){ap=false;nc++;ns.push(d.nome);}if(ds===''||ds===null)ha=false;
+                h+=`<td style="border:1px solid #ccc;padding:3px;text-align:center;${neg?'color:#dc2626;font-weight:700;':'color:#059669;'}">${ds}</td>`;
+            });
+            let obs='';
+            if(!act)obs=a.estado==='Transferido'?'Transferido':'Desistente';
+            else if(!ha)obs='';
+            else obs=checkApprovalRules(cn,ap,nc,ns,a.genero,nmin);
+            const oc=obs.includes('Aprov')?'color:#059669;':obs.includes('Reprov')?'color:#dc2626;':'color:#6b7280;';
+            h+=`<td style="border:1px solid #ccc;padding:3px;text-align:center;font-weight:600;font-size:9px;${oc}">${obs}</td></tr>`;
+        });
+        h+='</tbody></table>';
+        h+=`<div style="margin-top:30px;display:flex;justify-content:space-between;font-size:11px;"><div style="text-align:center;"><div style="border-top:1px solid #000;padding-top:4px;margin-top:40px;">O(A) Director(a)</div><p style="font-weight:600;">${STATE.currentSchool?.directorName||''}</p></div><div style="text-align:center;"><div style="border-top:1px solid #000;padding-top:4px;margin-top:40px;">O(A) Coord. Pedagógico(a)</div></div><div style="text-align:center;"><div style="border-top:1px solid #000;padding-top:4px;margin-top:40px;">O(A) Secretário(a)</div></div></div></div>`;
+        c.innerHTML=h;
+        STATE.cache.pautaContext={classeId:cid,turmaId:tid,classeNome:cn,turmaNome:tn,tipo,trimestre:trim,alunos,discs,notasMap:nMap,notaMax:nm,notaMin:nmin,isTerminal:isT};
+    } catch(e) { c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+// ========================================
+// 9. MENSAGENS - COMPLETO SEM INDEX
+// ========================================
+async function renderMensagens() {
+    const content = document.getElementById('pageContent');
+    if (!STATE.currentSchool) { content.innerHTML='<div class="empty-state"><h3>Selecione escola</h3></div>'; return; }
+    content.innerHTML=`<div class="page-header"><div><h2><i class="fas fa-comments"></i> Mensagens</h2></div><div class="page-actions"><button class="btn btn-primary" onclick="openMsgSend()"><i class="fas fa-paper-plane"></i> Nova</button></div></div>
+    <div class="tabs" id="mtabs"><div class="tab active" onclick="loadMsgTab('in')">📥 Recebidas</div><div class="tab" onclick="loadMsgTab('out')">📤 Enviadas</div><div class="tab" onclick="loadMsgTab('wall')">📢 Mural</div></div>
+    <div id="marea"><div class="spinner" style="margin:20px auto;"></div></div>`;
+    await loadMsgTab('in');
+}
+
+async function loadMsgTab(tab) {
+    const a=document.getElementById('marea');if(!a)return;
+    a.innerHTML='<div class="spinner" style="margin:20px auto;"></div>';
+    document.querySelectorAll('#mtabs .tab').forEach((t,i)=>t.classList.toggle('active',['in','out','wall'].indexOf(tab)===i));
+    const uid=STATE.userProfile?.id;
+    try {
+        if (tab==='in') {
+            const all=await FS_school('mensagens');
+            const msgs=all.filter(m=>m.destinatarioId===uid).sort((x,y)=>(y.createdAt?.seconds||0)-(x.createdAt?.seconds||0));
+            if(!msgs.length){a.innerHTML='<div class="card"><div class="card-body"><div class="empty-state"><i class="fas fa-inbox"></i><h3>Caixa vazia</h3></div></div></div>';return;}
+            let h='<div class="card"><div class="card-body">';
+            msgs.forEach(m=>{
+                const dt=m.createdAt?.toDate?m.createdAt.toDate().toLocaleString('pt-AO'):'';
+                const ur=!m.lida;
+                h+=`<div style="padding:12px;border:1px solid ${ur?'var(--primary)':'var(--gray-200)'};border-radius:8px;margin-bottom:8px;cursor:pointer;${ur?'background:rgba(26,86,219,0.03);border-left:3px solid var(--primary);':''}" onclick="openMsgRead('${m.id}')">
+                <div style="display:flex;justify-content:space-between;"><strong>${m.remetenteNome||'Sistema'}</strong><small style="color:var(--gray-500);">${dt}</small></div>
+                <div style="font-weight:${ur?'700':'400'};margin-top:4px;">${m.assunto||'Sem assunto'}</div>
+                <div style="font-size:12px;color:var(--gray-600);margin-top:2px;">${(m.mensagem||'').substring(0,120)}</div>
+                ${ur?'<span class="badge-status badge-info" style="font-size:9px;margin-top:4px;">Nova</span>':''}
+                </div>`;
+            });
+            h+='</div></div>';a.innerHTML=h;
+        } else if (tab==='out') {
+            const all=await FS_school('mensagens');
+            const msgs=all.filter(m=>m.remetenteId===uid).sort((x,y)=>(y.createdAt?.seconds||0)-(x.createdAt?.seconds||0));
+            if(!msgs.length){a.innerHTML='<div class="card"><div class="card-body"><div class="empty-state"><i class="fas fa-paper-plane"></i><h3>Nada enviado</h3></div></div></div>';return;}
+            let h='<div class="card"><div class="card-body">';
+            msgs.forEach(m=>{
+                const dt=m.createdAt?.toDate?m.createdAt.toDate().toLocaleString('pt-AO'):'';
+                h+=`<div style="padding:12px;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:8px;">
+                <div style="display:flex;justify-content:space-between;"><strong>Para: ${m.destinatarioNome||'Todos'}</strong><small style="color:var(--gray-500);">${dt}</small></div>
+                <div style="margin-top:4px;">${m.assunto||''}</div><div style="font-size:12px;color:var(--gray-600);">${(m.mensagem||'').substring(0,120)}</div></div>`;
+            });
+            h+='</div></div>';a.innerHTML=h;
+        } else {
+            const avs=await FS_school('avisos');avs.sort((x,y)=>(y.createdAt?.seconds||0)-(x.createdAt?.seconds||0));
+            let h=`<div class="card"><div class="card-header"><h3>📢 Mural</h3><button class="btn btn-primary btn-sm" onclick="openNewAvisoModal()"><i class="fas fa-plus"></i> Novo</button></div><div class="card-body">`;
+            if(!avs.length)h+='<div class="empty-state"><h3>Nenhum aviso</h3></div>';
+            else avs.forEach(av=>{
+                const dt=av.createdAt?.toDate?av.createdAt.toDate().toLocaleDateString('pt-AO'):'';
+                h+=`<div style="padding:12px;border-left:4px solid var(--angola-red);background:#fafafa;border-radius:0 8px 8px 0;margin-bottom:10px;"><div style="display:flex;justify-content:space-between;"><h4>${av.titulo||''}</h4><small>${dt}</small></div><p style="margin-top:6px;white-space:pre-wrap;">${av.conteudo||''}</p><small style="color:var(--gray-500);">Por: ${av.autorNome||''}</small></div>`;
+            });
+            h+='</div></div>';a.innerHTML=h;
+        }
+    } catch(e) { a.innerHTML=`<div class="card"><div class="card-body"><p style="color:var(--danger);">${e.message}</p></div></div>`; }
+}
+
+async function openMsgRead(id) {
+    try {
+        await schoolRef().collection('mensagens').doc(id).update({lida:true});
+        const doc=await schoolRef().collection('mensagens').doc(id).get();const m=doc.data();
+        const dt=m.createdAt?.toDate?m.createdAt.toDate().toLocaleString('pt-AO'):'';
+        const ml=`<div id="rmModal" class="modal-overlay"><div class="modal"><div class="modal-header" style="background:var(--primary);color:#fff;"><h3>${m.assunto||'Mensagem'}</h3><button class="modal-close" onclick="closeModal('rmModal')" style="color:#fff;">&times;</button></div><div class="modal-body"><p style="font-size:12px;color:var(--gray-500);margin-bottom:12px;">De: <strong>${m.remetenteNome||''}</strong> | ${dt}</p><div style="padding:16px;background:var(--gray-100);border-radius:8px;white-space:pre-wrap;line-height:1.7;">${m.mensagem||''}</div></div><div class="modal-footer"><button class="btn btn-primary btn-sm" onclick="closeModal('rmModal');openMsgSend({destId:'${m.remetenteId}',destNome:'${(m.remetenteNome||'').replace(/'/g,"\\'")}',assunto:'Re: ${(m.assunto||'').replace(/'/g,"\\'")}'})"><i class="fas fa-reply"></i> Responder</button><button class="btn btn-secondary" onclick="closeModal('rmModal')">Fechar</button></div></div></div>`;
+        document.getElementById('rmModal')?.remove();document.body.insertAdjacentHTML('beforeend',ml);openModal('rmModal');
+        await loadMsgTab('in');
+    } catch(e) { showToast(e.message,'error'); }
+}
+
+function openMsgSend(pre={}) {
+    const ml=`<div id="smModal" class="modal-overlay"><div class="modal modal-lg"><div class="modal-header" style="background:var(--primary);color:#fff;"><h3><i class="fas fa-paper-plane"></i> Nova Mensagem</h3><button class="modal-close" onclick="closeModal('smModal')" style="color:#fff;">&times;</button></div>
+    <div class="modal-body">
+        <div class="form-row"><div class="form-group"><label>Enviar para</label><select id="smT" onchange="document.getElementById('smIG').style.display=this.value==='ind'?'block':'none';document.getElementById('smCG').style.display=this.value==='cargo'?'block':'none';"><option value="ind" ${pre.destId?'selected':''}>Individual</option><option value="cargo">Por Cargo</option><option value="all">Todos</option></select></div>
+        <div class="form-group" id="smCG" style="display:none;"><label>Cargo</label><select id="smCS"><option value="diretor">Director</option><option value="subdiretor_pedagogico">Sub. Pedagógico</option><option value="subdiretor_administrativo">Sub. Administrativo</option><option value="secretario">Secretário</option><option value="professor">Professores</option></select></div></div>
+        <div id="smIG" class="form-group">${pre.destNome?`<div style="padding:8px;background:var(--gray-100);border-radius:8px;">Para: <strong>${pre.destNome}</strong></div><input type="hidden" id="smDI" value="${pre.destId}"><input type="hidden" id="smDN" value="${pre.destNome}">`:`<label>Pesquisar</label><input type="text" id="smSR" placeholder="Nome..." oninput="smSrch()"><div id="smRS" style="max-height:100px;overflow-y:auto;margin-top:4px;"></div><input type="hidden" id="smDI" value=""><input type="hidden" id="smDN" value="">`}</div>
+        <div class="form-group"><label>Assunto *</label><input type="text" id="smAS" value="${pre.assunto||''}" placeholder="Assunto"></div>
+        <div class="form-group"><label>Mensagem *</label><textarea id="smMG" rows="5" placeholder="Mensagem..."></textarea></div>
+    </div>
+    <div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('smModal')">Cancelar</button><button class="btn btn-primary" onclick="doSend()"><i class="fas fa-paper-plane"></i> Enviar</button></div></div></div>`;
+    document.getElementById('smModal')?.remove();document.body.insertAdjacentHTML('beforeend',ml);openModal('smModal');
+}
+
+const smSrch=debounce(async function(){
+    const s=(document.getElementById('smSR')?.value||'').toLowerCase();
+    const r=document.getElementById('smRS');if(!r||s.length<2){if(r)r.innerHTML='';return;}
+    try {
+        let f=[];
+        if(STATE.currentSchool?.directorName?.toLowerCase().includes(s))f.push({id:STATE.currentSchool.directorId,nm:STATE.currentSchool.directorName,cg:'Director'});
+        (await FS_school('professores')).filter(p=>(p.name||'').toLowerCase().includes(s)).forEach(p=>f.push({id:p.uid||p.id,nm:p.name,cg:'Professor'}));
+        (await FS_school('funcionarios')).filter(p=>(p.name||'').toLowerCase().includes(s)).forEach(p=>f.push({id:p.uid||p.id,nm:p.name,cg:p.cargo||'Func.'}));
+        let h='';f.slice(0,6).forEach(x=>{h+=`<div style="padding:5px;border:1px solid var(--gray-200);border-radius:4px;margin-bottom:2px;cursor:pointer;font-size:12px;" onclick="document.getElementById('smDI').value='${x.id}';document.getElementById('smDN').value='${x.nm.replace(/'/g,"\\'")}';document.getElementById('smRS').innerHTML='<div style=\\'padding:4px;background:var(--gray-100);border-radius:4px;\\'>✓ ${x.nm}</div>';"><strong>${x.nm}</strong> <small>(${x.cg})</small></div>`;});
+        r.innerHTML=h||'<small>Nenhum.</small>';
+    }catch(e){}
+},300);
+
+async function doSend() {
+    const tipo=document.getElementById('smT')?.value||'ind';
+    const as=document.getElementById('smAS')?.value?.trim();
+    const mg=document.getElementById('smMG')?.value?.trim();
+    if(!as||!mg){showToast('Preencha assunto e mensagem!','error');return;}
+    const base={remetenteId:STATE.userProfile.id,remetenteNome:STATE.userProfile.name,assunto:as,mensagem:mg,lida:false,createdAt:firebase.firestore.FieldValue.serverTimestamp()};
+    showLoading();
+    try {
+        if(tipo==='ind'){
+            const di=document.getElementById('smDI')?.value,dn=document.getElementById('smDN')?.value;
+            if(!di){showToast('Selecione destinatário!','error');hideLoading();return;}
+            await schoolRef().collection('mensagens').add({...base,destinatarioId:di,destinatarioNome:dn});
+            showToast(`Enviada para ${dn}!`,'success');
+        } else if(tipo==='cargo'){
+            const cg=document.getElementById('smCS')?.value;
+            const us=await db.collection('users').where('schoolId','==',STATE.currentSchool.id).get();
+            let c=0;for(const u of us.docs){if(u.data().role===cg){await schoolRef().collection('mensagens').add({...base,destinatarioId:u.id,destinatarioNome:u.data().name||''});c++;}}
+            showToast(`Enviada a ${c} pessoa(s)!`,'success');
+        } else {
+            const us=await db.collection('users').where('schoolId','==',STATE.currentSchool.id).get();
+            let c=0;for(const u of us.docs){if(u.id===STATE.userProfile.id)continue;await schoolRef().collection('mensagens').add({...base,destinatarioId:u.id,destinatarioNome:u.data().name||''});c++;}
+            showToast(`Enviada a ${c} pessoa(s)!`,'success');
+        }
+        closeModal('smModal');await loadMsgTab('out');
+    }catch(e){showToast(e.message,'error');}
     hideLoading();
 }
 
 // ========================================
-// FIX 13: FIRESTORE TIMESTAMP SERIALIZATION
-// Para evitar erros ao tentar salvar dados com timestamps
+// 10. PASSES - COM INSÍGNIA
 // ========================================
-function cleanDataForFirestore(data) {
-    const cleaned = {};
-    for (const key in data) {
-        if (data.hasOwnProperty(key)) {
-            const val = data[key];
-            if (val === undefined) continue; // Skip undefined
-            if (val instanceof Date) {
-                cleaned[key] = firebase.firestore.Timestamp.fromDate(val);
-            } else if (val !== null && typeof val === 'object' && val.seconds !== undefined) {
-                cleaned[key] = val; // Already a timestamp
-            } else {
-                cleaned[key] = val;
-            }
+function buildPasseCard(item, tipo, yearData) {
+    const school=STATE.currentSchool;const isA=tipo==='aluno';
+    return `<div class="card" style="font-size:9px;border:2px solid var(--angola-red);"><div class="card-body" style="padding:10px;">
+    <div style="text-align:center;margin-bottom:6px;">${getInsigniaHTML(28)}<div style="font-size:7px;text-transform:uppercase;margin-top:2px;">República de Angola</div><div style="font-size:8px;font-weight:700;color:var(--angola-red);">${(school?.name||'').substring(0,35)}</div><div style="font-size:10px;font-weight:800;margin-top:3px;padding:2px 8px;background:var(--angola-red);color:white;display:inline-block;border-radius:4px;">${isA?'PASSE ESCOLAR':'PASSE FUNCIONAL'}</div></div>
+    <div style="display:flex;gap:8px;margin-top:6px;"><div style="flex-shrink:0;">${item.photo?`<img src="${item.photo}" style="width:50px;height:60px;object-fit:cover;border-radius:4px;border:1px solid #d1d5db;">`:'<div style="width:50px;height:60px;background:#e5e7eb;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">👤</div>'}</div>
+    <div style="flex:1;font-size:8px;"><div style="font-weight:700;color:#ce1126;font-size:10px;margin-bottom:3px;">${(item.name||'').substring(0,28)}</div>
+    ${isA?`<div><strong>Classe:</strong> ${item.classeNome||''}</div><div><strong>Turma:</strong> ${item.turmaNome||''}</div><div><strong>Mat.:</strong> ${item.matricula||''}</div><div><strong>Ano:</strong> ${yearData?.ano||''}</div>`:`<div><strong>Cargo:</strong> ${item.cargo||''}</div><div><strong>Área:</strong> ${item.area||''}</div><div><strong>Nº Ag.:</strong> ${item.numAgente||'-'}</div><div><strong>BI:</strong> ${item.bi||'-'}</div>`}
+    </div></div>
+    <div style="text-align:center;margin-top:8px;border-top:1px solid #d1d5db;padding-top:4px;"><div style="font-size:7px;">Válido: ${yearData?.ano||new Date().getFullYear()}</div><div style="margin-top:8px;"><div style="border-top:1px solid #000;width:70%;margin:0 auto;"></div><div style="font-size:7px;margin-top:1px;">O(A) Director(a)</div><div style="font-size:8px;font-weight:700;">${school?.directorName||''}</div></div></div>
+    </div></div>`;
+}
+
+async function generatePassesAlunos() {
+    const c=document.getElementById('passesAlunosContainer');
+    const yid=document.getElementById('passeAno')?.value;if(!yid){showToast('Selecione ano','error');return;}
+    const cid=document.getElementById('passeClasse')?.value,tid=document.getElementById('passeTurma')?.value;
+    c.innerHTML='<div class="spinner" style="margin:20px auto;"></div>';
+    try {
+        const sid=STATE.currentSchool.id;
+        let alunos=await FS_getAll(FS_yearPathCustom(sid,yid,'alunos'));
+        alunos=alunos.filter(a=>a.estado==='Ativo');
+        if(cid)alunos=alunos.filter(a=>a.classeId===cid);
+        if(tid)alunos=alunos.filter(a=>a.turmaId===tid);
+        alunos.sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+        const yDoc=await db.collection('schools').doc(sid).collection('anos_letivos').doc(yid).get();
+        const yd=yDoc.data();
+        STATE.cache.passesData={type:'alunos',items:alunos,yearData:yd};
+        if(!alunos.length){c.innerHTML='<div class="empty-state"><h3>Nenhum aluno</h3></div>';return;}
+        let h='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">';
+        alunos.forEach(a=>{h+=buildPasseCard(a,'aluno',yd);});
+        h+='</div>';c.innerHTML=h;
+    }catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+
+async function generatePassesFuncionarios() {
+    const c=document.getElementById('passesFuncContainer');
+    const cargo=document.getElementById('passeFuncCargo')?.value;
+    c.innerHTML='<div class="spinner" style="margin:20px auto;"></div>';
+    try {
+        const profs=await FS_school('professores');const funcs=await FS_school('funcionarios');
+        let items=[];
+        profs.filter(p=>p.ativo!==false).forEach(p=>items.push({...p,cargo:'Professor',tipo:'professor'}));
+        funcs.filter(f=>f.ativo!==false).forEach(f=>items.push({...f,tipo:'funcionario'}));
+        if(cargo){
+            if(cargo==='Professor')items=items.filter(i=>i.tipo==='professor');
+            else items=items.filter(i=>(i.cargo||'').includes(cargo));
         }
-    }
-    return cleaned;
+        STATE.cache.passesData={type:'funcionarios',items,yearData:STATE.currentYear};
+        if(!items.length){c.innerHTML='<div class="empty-state"><h3>Nenhum</h3></div>';return;}
+        let h='<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">';
+        items.forEach(f=>{h+=buildPasseCard(f,'funcionario',STATE.currentYear);});
+        h+='</div>';c.innerHTML=h;
+    }catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
 }
 
 // ========================================
-// FIX 14: RECUPERAÇÃO DE SENHA MELHORADA
+// 11. HELPERS SEM INDEX
 // ========================================
-async function handleForgotPassword(e) {
-    e.preventDefault();
-    const email = document.getElementById('forgotEmail').value.trim();
-
-    if (!email) {
-        showToast('Digite o email!', 'error');
-        return false;
-    }
-
-    // Validar formato do email
-    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-    if (!emailRegex.test(email)) {
-        showToast('Email inválido!', 'error');
-        return false;
-    }
-
-    showLoading();
-    try {
-        // Verificar se email existe no sistema
-        const usersSnap = await db.collection('users').where('email', '==', email).limit(1).get();
-
-        if (usersSnap.empty) {
-            // Também verificar em professores e funcionários
-            let found = false;
-            const schoolsSnap = await db.collection('schools').get();
-            for (const schoolDoc of schoolsSnap.docs) {
-                const profsSnap = await db.collection('schools').doc(schoolDoc.id)
-                    .collection('professores').where('email', '==', email).limit(1).get();
-                if (!profsSnap.empty) { found = true; break; }
-
-                const funcsSnap = await db.collection('schools').doc(schoolDoc.id)
-                    .collection('funcionarios').where('email', '==', email).limit(1).get();
-                if (!funcsSnap.empty) { found = true; break; }
-            }
-
-            if (!found) {
-                hideLoading();
-                showToast('Email não encontrado no sistema! Verifique e tente novamente.', 'error');
-                return false;
-            }
-        }
-
-        await auth.sendPasswordResetEmail(email);
-        showToast('Email de recuperação enviado com sucesso! Verifique sua caixa de entrada e spam.', 'success');
-        showLoginForm();
-    } catch (error) {
-        console.error('Forgot password error:', error);
-        switch (error.code) {
-            case 'auth/user-not-found':
-                showToast('Nenhuma conta associada a este email.', 'error');
-                break;
-            case 'auth/invalid-email':
-                showToast('Email inválido!', 'error');
-                break;
-            case 'auth/too-many-requests':
-                showToast('Muitas tentativas! Aguarde alguns minutos.', 'warning');
-                break;
-            default:
-                showToast('Erro ao enviar email: ' + error.message, 'error');
-        }
-    }
-    hideLoading();
-    return false;
+async function getDisciplinasForClasse(classeId) {
+    if(!STATE.currentYearId||!classeId)return[];
+    return (await FS_year('disciplinas')).filter(d=>d.classeId===classeId).sort((a,b)=>(a.ordem||0)-(b.ordem||0));
+}
+async function getTurmasForClasse(classeId) {
+    if(!STATE.currentYearId||!classeId)return[];
+    return (await FS_year('turmas')).filter(t=>t.classeId===classeId);
+}
+async function getAllClasses() {
+    if(!STATE.currentYearId)return[];
+    return (await FS_year('classes')).sort((a,b)=>(a.ordem||0)-(b.ordem||0));
+}
+async function getAllProfessors() {
+    if(!STATE.currentSchool)return[];
+    return (await FS_school('professores')).sort((a,b)=>(a.name||'').localeCompare(b.name||''));
+}
+async function loadClassesTable() {
+    const c=document.getElementById('classesTableContainer');if(!c)return;
+    if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano letivo</h3></div>';return;}
+    try{const cls=await getAllClasses();STATE.cache.classes=cls;const el=document.getElementById('statTotalClasses');if(el)el.textContent=cls.length;renderClassesTableData(cls);}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function loadTurmasTable() {
+    const c=document.getElementById('turmasTableContainer');if(!c)return;
+    if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano letivo</h3></div>';return;}
+    try{let t=await FS_year('turmas');t.sort((a,b)=>(a.nome||'').localeCompare(b.nome||''));const fc=document.getElementById('filterTurmaClasse')?.value,ft=document.getElementById('filterTurmaTurno')?.value;if(fc)t=t.filter(x=>x.classeId===fc);if(ft)t=t.filter(x=>x.turnoId===ft);STATE.cache.turmas=t;
+    if(!t.length){c.innerHTML='<div class="empty-state"><h3>Nenhuma turma</h3></div>';return;}
+    const cm=['super_admin','diretor','subdiretor_pedagogico','secretario','coordenador'].includes(STATE.userProfile?.role);
+    let h=`<table><thead><tr><th>#</th><th>Código</th><th>Turma</th><th>Classe</th><th>Curso</th><th>Turno</th><th>Sala</th><th class="center">Alunos</th><th class="center">Cap.</th><th>Lot.</th>${cm?'<th>Acções</th>':''}</tr></thead><tbody>`;
+    t.forEach((x,i)=>{const p=x.capacidade?Math.round((x.numAlunos||0)/x.capacidade*100):0;const l=p>=100?'Cheia':p>=80?'Quase Cheia':'Disponível';const lc=p>=100?'badge-inactive':p>=80?'badge-pending':'badge-active';
+    h+=`<tr><td>${i+1}</td><td><code>${x.codigo||''}</code></td><td><strong>${x.nome||''}</strong></td><td>${x.classeNome||''}</td><td>${x.curso||'-'}</td><td>${x.turnoNome||''}</td><td>${x.sala||'-'}</td><td class="center">${x.numAlunos||0}</td><td class="center">${x.capacidade||'-'}</td><td><span class="badge-status ${lc}">${l}</span></td>${cm?`<td><button class="btn btn-sm btn-primary" onclick="editTurma('${x.id}')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-danger" onclick="deleteTurma('${x.id}')"><i class="fas fa-trash"></i></button></td>`:''}</tr>`;});
+    h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function loadDisciplinasTable() {
+    const c=document.getElementById('disciplinasTableContainer');if(!c)return;
+    if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano letivo</h3></div>';return;}
+    try{let d=await FS_year('disciplinas');const fc=document.getElementById('filterDiscClasse')?.value;if(fc)d=d.filter(x=>x.classeId===fc);d.sort((a,b)=>(a.ordem||0)-(b.ordem||0));STATE.cache.disciplinas=d;renderDisciplinasTableData(d);}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function loadTurnosData() {
+    try{let t=await FS_school('turnos');t.sort((a,b)=>(a.ordem||0)-(b.ordem||0));STATE.cache.turnos=t;renderTurnosCards(t);renderTurnosTable(t);}catch(e){}
+}
+async function loadFuncionariosTable() {
+    const c=document.getElementById('funcTableContainer');if(!c)return;
+    try{let f=await FS_school('funcionarios');f.sort((a,b)=>(a.name||'').localeCompare(b.name||''));const fc=document.getElementById('filterFuncCargo')?.value;if(fc)f=f.filter(x=>(x.cargo||'').includes(fc));STATE.cache.funcionarios=f;renderFuncTableData(f);}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function loadProfessoresTable() {
+    const c=document.getElementById('profsTableContainer');if(!c)return;
+    try{let p=await FS_school('professores');p.sort((a,b)=>(a.name||'').localeCompare(b.name||''));STATE.cache.professores=p;
+    const s=document.getElementById('profStats');if(s)s.innerHTML=`<div class="stat-card"><div class="stat-icon green"><i class="fas fa-chalkboard-teacher"></i></div><div class="stat-info"><h4>${p.length}</h4><p>Total</p></div></div><div class="stat-card"><div class="stat-icon blue"><i class="fas fa-user-check"></i></div><div class="stat-info"><h4>${p.filter(x=>x.ativo!==false).length}</h4><p>Ativos</p></div></div>`;
+    renderProfsTableData(p);}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function loadYearsTable() {
+    const c=document.getElementById('yearsTable');if(!c)return;
+    try{let y=await FS_school('anos_letivos');y.sort((a,b)=>(b.ano||'').localeCompare(a.ano||''));if(!y.length){c.innerHTML='<div class="empty-state"><h3>Nenhum ano letivo</h3></div>';return;}
+    const cm=['super_admin','diretor'].includes(STATE.userProfile?.role);
+    let h=`<table><thead><tr><th>#</th><th>Código</th><th>Ano</th><th>Início</th><th>Fim</th><th>Trimestres</th><th>Estado</th>${cm?'<th>Acções</th>':''}</tr></thead><tbody>`;
+    y.forEach((x,i)=>{const sc=x.status==='aberto'?'badge-active':x.status==='fechado'?'badge-inactive':'badge-pending';let ti='';if(x.trimestres)ti=Object.keys(x.trimestres).map(t=>`<small class="badge-status ${x.trimestres[t]==='aberto'?'badge-active':'badge-inactive'}" style="margin:1px;">${t}: ${x.trimestres[t]}</small>`).join(' ');
+    h+=`<tr><td>${i+1}</td><td>${x.codigo||''}</td><td><strong>${x.ano}</strong></td><td>${x.inicio||'-'}</td><td>${x.fim||'-'}</td><td>${ti||'-'}</td><td><span class="badge-status ${sc}">${x.status||'pendente'}</span></td>${cm?`<td><div style="display:flex;gap:4px;flex-wrap:wrap;">${x.status!=='aberto'?`<button class="btn btn-sm btn-success" onclick="changeYearStatus('${x.id}','aberto')"><i class="fas fa-lock-open"></i></button>`:''} ${x.status==='aberto'?`<button class="btn btn-sm btn-danger" onclick="changeYearStatus('${x.id}','fechado')"><i class="fas fa-lock"></i></button>`:''} <button class="btn btn-sm btn-primary" onclick="editYear('${x.id}')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-warning" onclick="manageTrimesters('${x.id}')"><i class="fas fa-calendar-check"></i></button> <button class="btn btn-sm btn-danger" onclick="deleteYear('${x.id}')"><i class="fas fa-trash"></i></button></div></td>`:''}</tr>`;});
+    h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function loadAtribuicoesTable() {
+    const c=document.getElementById('atribuicoesTableContainer');if(!c)return;
+    if(!STATE.currentYearId){c.innerHTML='<div class="empty-state"><h3>Abra um ano letivo</h3></div>';return;}
+    try{let a=await FS_year('atribuicoes');const fp=document.getElementById('filterAtribProf')?.value,fc=document.getElementById('filterAtribClasse')?.value;if(fp)a=a.filter(x=>x.professorId===fp);if(fc)a=a.filter(x=>x.classeId===fc);STATE.cache.atribuicoes=a;
+    const cm=['super_admin','diretor','subdiretor_pedagogico'].includes(STATE.userProfile?.role);
+    if(!a.length){c.innerHTML='<div class="empty-state"><h3>Nenhuma atribuição</h3></div>';return;}
+    let h=`<table><thead><tr><th>#</th><th>Professor</th><th>Disciplina</th><th>Classe</th><th>Turma</th><th>Curso</th><th>Turno</th>${cm?'<th>Acções</th>':''}</tr></thead><tbody>`;
+    a.forEach((x,i)=>{h+=`<tr><td>${i+1}</td><td><strong>${x.professorNome||''}</strong></td><td>${x.disciplinaNome||''}</td><td>${x.classeNome||''}</td><td>${x.turmaNome||''}</td><td>${x.curso||'-'}</td><td>${x.turnoNome||'-'}</td>${cm?`<td><button class="btn btn-sm btn-primary" onclick="editAtribuicao('${x.id}')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-danger" onclick="deleteAtribuicao('${x.id}')"><i class="fas fa-trash"></i></button></td>`:''}</tr>`;});
+    h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function loadFaltasProfs() {
+    const c=document.getElementById('faltasProfsContainer');if(!c)return;
+    try{let f=await FS_school('faltas_professores');f.sort((a,b)=>(b.data||'').localeCompare(a.data||''));f=f.slice(0,50);
+    if(!f.length){c.innerHTML='<div class="empty-state"><h3>Nenhuma falta</h3></div>';return;}
+    let h=`<table><thead><tr><th>#</th><th>Data</th><th>Professor</th><th>Motivo</th><th>Substituto</th><th>Acções</th></tr></thead><tbody>`;
+    f.forEach((x,i)=>{h+=`<tr><td>${i+1}</td><td>${x.data||''}</td><td><strong>${x.professorNome||''}</strong></td><td>${x.motivo||'-'}</td><td>${x.substitutoNome||'-'}</td><td><button class="btn btn-sm btn-danger" onclick="deleteFaltaProf('${x.id}')"><i class="fas fa-trash"></i></button></td></tr>`;});
+    h+='</tbody></table>';c.innerHTML=h;}catch(e){c.innerHTML=`<p style="color:var(--danger);">${e.message}</p>`;}
+}
+async function checkNotifications() {
+    if(!STATE.currentSchool||!STATE.userProfile)return;
+    try{const all=await FS_school('mensagens');const n=all.filter(m=>m.destinatarioId===STATE.userProfile.id&&!m.lida).length;const d=document.getElementById('msgNotif'),nd=document.getElementById('notifDot');if(n>0){if(d)d.classList.remove('hidden');if(nd)nd.classList.remove('hidden');}else{if(d)d.classList.add('hidden');}}catch(e){}
 }
 
 // ========================================
-// FIX 15: LOGIN MELHORADO COM MELHOR FEEDBACK
+// 12. CSS RESPONSIVO
 // ========================================
-async function handleLogin(e) {
-    e.preventDefault();
-    const email = document.getElementById('loginEmail').value.trim();
-    const password = document.getElementById('loginPassword').value;
-
-    if (!email || !password) {
-        showToast('Preencha email e senha!', 'error');
-        return false;
-    }
-
-    showLoading();
-    try {
-        await auth.signInWithEmailAndPassword(email, password);
-        showToast('Login realizado com sucesso!', 'success');
-    } catch (error) {
-        hideLoading();
-        console.error('Login error:', error);
-        switch (error.code) {
-            case 'auth/user-not-found':
-                showToast('Utilizador não encontrado! Verifique o email.', 'error');
-                break;
-            case 'auth/wrong-password':
-                showToast('Senha incorrecta! Tente novamente.', 'error');
-                break;
-            case 'auth/invalid-email':
-                showToast('Formato de email inválido!', 'error');
-                break;
-            case 'auth/user-disabled':
-                showToast('Conta desactivada! Contacte o administrador.', 'error');
-                break;
-            case 'auth/too-many-requests':
-                showToast('Muitas tentativas falhadas! Aguarde alguns minutos ou recupere a senha.', 'warning');
-                break;
-            case 'auth/invalid-credential':
-                showToast('Email ou senha incorrectos!', 'error');
-                break;
-            default:
-                showToast('Erro no login: ' + error.message, 'error');
-        }
-    }
-    return false;
-}
-
-// ========================================
-// FIX 16: DADOS VISÍVEIS - Sincronização instantânea
-// Resolver problema de dados não aparecendo após salvar
-// ========================================
-function enableRealtimeSync() {
-    if (!STATE.currentSchool || !STATE.currentYearId) return;
-
-    // Listener para alunos
-    try {
-        yearRef().collection('alunos').onSnapshot(() => {
-            if (STATE.currentPage === 'alunos' && document.getElementById('alunosTableContainer')) {
-                loadAlunosTable();
-            }
-        }, (err) => { console.log('Snapshot error (alunos):', err.message); });
-    } catch(e) {}
-
-    // Listener para notas
-    try {
-        yearRef().collection('notas').onSnapshot(() => {
-            if (STATE.currentPage === 'notas' && document.getElementById('notasGridContainer')) {
-                // Não recarregar automático para evitar perda de dados em edição
-            }
-        }, (err) => { console.log('Snapshot error (notas):', err.message); });
-    } catch(e) {}
-}
-
-// Chamar quando escola e ano são carregados
-const _origShowApp = showApp;
-showApp = function() {
-    _origShowApp();
-    setTimeout(enableRealtimeSync, 2000);
-};
-
-// ========================================
-// FIX 17: LAYOUT - Remover espaço vazio no topo
-// ========================================
-const layoutFixCSS = document.createElement('style');
-layoutFixCSS.textContent = `
-    /* Fix espaço vazio no topo */
-    .page-content { padding-top: 16px; }
-    .header { min-height: var(--header-height); max-height: var(--header-height); }
-
-    /* Fix informações escondidas por overlap */
-    .main-content { padding-top: 0; }
-
-    /* Fix modal no mobile */
-    @media (max-width: 768px) {
-        .modal { max-width: calc(100vw - 20px); margin: 10px; }
-        .modal-body { max-height: 70vh; overflow-y: auto; }
-        .filter-bar { flex-direction: column; }
-        .filter-bar > * { width: 100%; }
-        .page-actions { width: 100%; }
-        .page-actions .btn { flex: 1; }
-        .stats-grid { grid-template-columns: 1fr 1fr; }
-    }
-
-    @media (max-width: 480px) {
-        .stats-grid { grid-template-columns: 1fr; }
-        .form-row, .form-row-3 { grid-template-columns: 1fr; }
-    }
-
-    /* Fix tabela responsiva */
-    .table-container { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-
-    /* Fix toast z-index */
-    .toast-container { z-index: 99999; }
-
-    /* Fix loading overlay */
-    .loading-overlay { z-index: 99998; }
-
-    /* Fix sidebar mobile overlay */
-    @media (max-width: 768px) {
-        .sidebar.mobile-open { z-index: 9999; }
-        .sidebar.mobile-open::after {
-            content: '';
-            position: fixed;
-            top: 0; left: var(--sidebar-width); right: 0; bottom: 0;
-            background: rgba(0,0,0,0.4);
-            z-index: -1;
-        }
-    }
-
-    /* Fix notas centralizadas */
-    .nota-input {
-        text-align: center !important;
-        border: 1px solid var(--gray-300) !important;
-        border-radius: 4px !important;
-    }
-
-    /* Fix print - remover header do sistema nos documentos */
-    @media print {
-        .sidebar, .header, .page-header, .page-actions,
-        .filter-bar, .tabs, .modal-footer, .btn,
-        .consultation-fab { display: none !important; }
-        .main-content { margin-left: 0 !important; }
-        .page-content { padding: 0 !important; }
-        .card { box-shadow: none !important; border: none !important; }
-    }
-
-    /* Fix consulta FAB position */
-    .consultation-fab {
-        position: fixed !important;
-        bottom: 24px !important;
-        right: 24px !important;
-        z-index: 9990 !important;
-    }
-
-    /* Fix dropdown z-index */
-    .dropdown-menu { z-index: 999; }
-
-    /* Melhorar visual do nome do aluno */
-    .student-name {
-        color: var(--angola-red) !important;
-        font-weight: 600 !important;
-    }
+const css = document.createElement('style');
+css.textContent = `
+@media(max-width:768px){.form-row,.form-row-3{grid-template-columns:1fr!important;}.stats-grid{grid-template-columns:1fr 1fr;gap:8px;}.stat-card{padding:10px;}.stat-card h4{font-size:16px;}.card-header{flex-direction:column;align-items:flex-start;gap:8px;}.tabs{overflow-x:auto;flex-wrap:nowrap;}.tab{flex-shrink:0;padding:8px 12px;font-size:12px;}.nota-input{width:40px!important;font-size:11px!important;}table{font-size:11px;}table th,table td{padding:5px 6px;}}
+@media(max-width:480px){.stats-grid{grid-template-columns:1fr;}.page-content{padding:8px;}}
+.table-container{overflow-x:auto;-webkit-overflow-scrolling:touch;}
+@media print{.sidebar,.header,.page-header,.page-actions,.filter-bar,.tabs,.modal-footer,.btn,.consultation-fab{display:none!important;}.main-content{margin-left:0!important;}.page-content{padding:0!important;}.card{box-shadow:none!important;border:none!important;}}
 `;
-document.head.appendChild(layoutFixCSS);
+document.head.appendChild(css);
 
 // ========================================
-// FIX 18: SAVE SYSTEM CONFIG - Insígnia melhorada
+// PRONTO
 // ========================================
-async function saveSystemConfig() {
-    showLoading();
+console.log('%c✅ CORREÇÃO ABSOLUTA FINAL APLICADA', 'color:#059669;font-size:16px;font-weight:bold;');
+console.log('   Todas queries usam FS_getAll() - ZERO erros de index');
+console.log('   Boletins, Passes, Mensagens, Pautas, Notas - tudo funcional');
+</script>
+<script>
+// ============================================================
+// CORREÇÃO COMPLETA V5 - DOCUMENTOS, CÁLCULOS, FINANCEIRO
+// ============================================================
+console.log('🔧 Aplicando correção V5...');
+
+// ========================================
+// HELPERS FIRESTORE SEM INDEX
+// ========================================
+async function FS_getAll(path) {
     try {
-        const updateData = {
-            systemName: document.getElementById('sysName')?.value || 'SGE-NG',
-            updatedAt: firebase.firestore.FieldValue.serverTimestamp()
+        const parts = path.split('/');
+        let ref = db;
+        for (let i = 0; i < parts.length; i++) {
+            ref = (i % 2 === 0) ? ref.collection(parts[i]) : ref.doc(parts[i]);
+        }
+        const snap = await ref.get();
+        return snap.docs ? snap.docs.map(d => ({ id: d.id, ...d.data() })) : [];
+    } catch (e) { console.error('FS error:', path, e.message); return []; }
+}
+function FS_yp(col) { return `schools/${STATE.currentSchool?.id}/anos_letivos/${STATE.currentYearId}/${col}`; }
+function FS_sp(col) { return `schools/${STATE.currentSchool?.id}/${col}`; }
+function FS_ypC(sid, yid, col) { return `schools/${sid}/anos_letivos/${yid}/${col}`; }
+async function FS_year(col) { if (!STATE.currentSchool?.id || !STATE.currentYearId) return []; return FS_getAll(FS_yp(col)); }
+async function FS_school(col) { if (!STATE.currentSchool?.id) return []; return FS_getAll(FS_sp(col)); }
+
+// ========================================
+// GENDER HELPERS
+// ========================================
+function genderTitle(genero, cargo) {
+    // cargo: 'Director', 'Subdiretor Pedagógico', etc.
+    if (genero === 'F') {
+        if (cargo === 'Director') return 'A Directora';
+        if (cargo === 'Subdiretor Pedagógico') return 'A Subdirectora Pedagógica';
+        return 'A ' + cargo;
+    }
+    if (cargo === 'Director') return 'O Director';
+    if (cargo === 'Subdiretor Pedagógico') return 'O Subdirector Pedagógico';
+    return 'O ' + cargo;
+}
+function genderWord(genero, masc, fem) { return genero === 'F' ? fem : masc; }
+
+// Obter dados do director e subdiretor
+function getDirectorInfo() {
+    const s = STATE.currentSchool || {};
+    return { name: s.directorName || '', genero: s.directorGenero || 'M' };
+}
+async function getSubdirectorPedInfo() {
+    const funcs = await FS_school('funcionarios');
+    const sub = funcs.find(f => f.cargo === 'Subdiretor Pedagógico' || f.cargo === 'Subdirectora Pedagógica');
+    return sub ? { name: sub.name || '', genero: sub.genero || 'M' } : { name: '', genero: 'M' };
+}
+
+// ========================================
+// COMPRESSÃO DE IMAGEM
+// ========================================
+async function compressImage(file, maxW, qual) {
+    maxW = maxW || 500; qual = qual || 0.6;
+    if (file.size > 15 * 1024 * 1024) throw new Error('Máximo 15MB.');
+    return new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onerror = () => rej(new Error('Erro ao ler.'));
+        r.onload = (ev) => {
+            const img = new Image();
+            img.onerror = () => rej(new Error('Erro na imagem.'));
+            img.onload = () => {
+                const c = document.createElement('canvas');
+                let w = img.width, h = img.height;
+                if (w > maxW) { h = Math.round(h * maxW / w); w = maxW; }
+                c.width = w; c.height = h;
+                const ctx = c.getContext('2d');
+                ctx.fillStyle = '#FFF'; ctx.fillRect(0, 0, w, h);
+                ctx.drawImage(img, 0, 0, w, h);
+                let out = c.toDataURL('image/jpeg', qual);
+                if (out.length > 800000) out = c.toDataURL('image/jpeg', 0.3);
+                if (out.length > 800000) {
+                    c.width = Math.round(w * 0.5); c.height = Math.round(h * 0.5);
+                    const ctx2 = c.getContext('2d');
+                    ctx2.fillStyle = '#FFF'; ctx2.fillRect(0, 0, c.width, c.height);
+                    ctx2.drawImage(img, 0, 0, c.width, c.height);
+                    out = c.toDataURL('image/jpeg', 0.3);
+                }
+                res(out);
+            };
+            img.src = ev.target.result;
         };
+        r.readAsDataURL(file);
+    });
+}
 
-        // Handle insígnia upload com compressão adequada
-        const insigniaFile = document.getElementById('sysInsigniaFile')?.files[0];
-        if (insigniaFile) {
-            try {
-                const compressed = await compressInsignia(insigniaFile, 200, 0.8);
-                updateData.insigniaBase64 = compressed;
-                STATE.insigniaBase64 = compressed;
+// Photo handlers
+async function handleAlunoPhoto(i) { if (!i.files?.[0]) return; try { showToast('Comprimindo...', 'info'); const b = await compressImage(i.files[0], 400, 0.6); document.getElementById('alunoPhotoB64').value = b; document.getElementById('alunoPhotoPreview').innerHTML = `<img src="${b}">`; showToast('OK!', 'success'); } catch (e) { showToast(e.message, 'error'); } }
+async function handleFuncPhoto(i) { if (!i.files?.[0]) return; try { const b = await compressImage(i.files[0], 400, 0.6); document.getElementById('funcPhotoB64').value = b; document.getElementById('funcPhotoPreview').innerHTML = `<img src="${b}">`; showToast('OK!', 'success'); } catch (e) { showToast(e.message, 'error'); } }
+async function handleProfPhoto(i) { if (!i.files?.[0]) return; try { const b = await compressImage(i.files[0], 400, 0.6); document.getElementById('profPhotoB64').value = b; document.getElementById('profPhotoPreview').innerHTML = `<img src="${b}">`; showToast('OK!', 'success'); } catch (e) { showToast(e.message, 'error'); } }
+async function handlePerfilPhoto(i) { if (!i.files?.[0]) return; try { const b = await compressImage(i.files[0], 300, 0.5); document.getElementById('perfilPhotoPreview').innerHTML = `<img src="${b}">`; await db.collection('users').doc(STATE.userProfile.id).update({ photo: b }); STATE.userProfile.photo = b; showToast('OK!', 'success'); } catch (e) { showToast(e.message, 'error'); } }
 
-                // Actualizar UI
-                const currentIns = document.getElementById('currentInsignia');
-                if (currentIns) currentIns.innerHTML = `<img src="${compressed}" style="max-width:100%;max-height:100%;">`;
+// ========================================
+// CÁLCULOS DE NOTAS CORRIGIDOS
+// ========================================
+function calcMT(mac, npt) {
+    const m = parseFloat(mac), n = parseFloat(npt);
+    return (isNaN(m) || isNaN(n)) ? '' : Math.round(((m + n) / 2) * 10) / 10;
+}
+// CT3 = (MT1 + MT2 + MAC3) / 3
+function calcCT3(mt1, mt2, mac3) {
+    const a = parseFloat(mt1), b = parseFloat(mt2), c = parseFloat(mac3);
+    return (isNaN(a) || isNaN(b) || isNaN(c)) ? '' : Math.round(((a + b + c) / 3) * 10) / 10;
+}
+// MFD Terminal (6ª,9ª,12ª,13ª) = CT3×60% + Exame×40%
+function calcMFD(ct3, exame) {
+    const c = parseFloat(ct3), e = parseFloat(exame);
+    return (isNaN(c) || isNaN(e)) ? '' : Math.round((c * 0.6 + e * 0.4) * 10) / 10;
+}
+// MF Normal = (MT1+MT2+MAC3)/3
+function calcMFNormal(mt1, mt2, mac3) { return calcCT3(mt1, mt2, mac3); }
 
-                const sideIns = document.getElementById('sidebarInsignia');
-                if (sideIns) sideIns.innerHTML = `<img src="${compressed}" style="width:36px;height:36px;object-fit:contain;">`;
+function getNotaObs(mt, notaMin, genero) {
+    if (mt === '' || mt === null || mt === undefined) return '';
+    const v = parseFloat(mt);
+    if (isNaN(v)) return '';
+    return v >= notaMin ? genderWord(genero, 'Aprovado', 'Aprovada') : genderWord(genero, 'Reprovado', 'Reprovada');
+}
+function numberToWords(n) {
+    if (n === null || n === undefined || isNaN(n)) return '';
+    n = Math.round(n);
+    const w = ['Zero', 'Um', 'Dois', 'Três', 'Quatro', 'Cinco', 'Seis', 'Sete', 'Oito', 'Nove', 'Dez',
+        'Onze', 'Doze', 'Treze', 'Catorze', 'Quinze', 'Dezasseis', 'Dezassete', 'Dezoito', 'Dezanove', 'Vinte'];
+    return (n >= 0 && n <= 20 ? w[n] : String(n)) + ' valores';
+}
 
-                const loginIns = document.getElementById('loginInsignia');
-                if (loginIns) loginIns.innerHTML = `<img src="${compressed}" style="width:70px;height:auto;">`;
-            } catch (imgErr) {
-                showToast('Erro ao processar insígnia: ' + imgErr.message, 'error');
-                hideLoading();
-                return;
-            }
+// ========================================
+// BLOCO DE ASSINATURA REUTILIZÁVEL
+// ========================================
+function signatureBlock(cargo, name, genero) {
+    // Formato: Cargo em cima, traço no meio, nome em baixo
+    const title = genderTitle(genero, cargo);
+    return `<div style="text-align:center;min-width:180px;">
+        <div style="font-size:11px;margin-bottom:2px;">${title}</div>
+        <div style="border-top:1px solid #000;width:80%;margin:25px auto 4px;"></div>
+        <div style="font-weight:700;font-size:11px;">${name}</div>
+    </div>`;
+}
+
+// ========================================
+// ALUNOS
+// ========================================
+async function loadAlunosTable() {
+    const c = document.getElementById('alunosTableContainer'); if (!c) return;
+    try {
+        let al = await FS_year('alunos');
+        al.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        const fC = document.getElementById('filterAlunoClasse')?.value;
+        const fT = document.getElementById('filterAlunoTurma')?.value;
+        const fE = document.getElementById('filterAlunoEstado')?.value;
+        if (fC) al = al.filter(a => a.classeId === fC);
+        if (fT) al = al.filter(a => a.turmaId === fT);
+        if (fE) al = al.filter(a => a.estado === fE);
+        STATE.cache.alunos = al;
+        renderAlunosTableData(al);
+    } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+// ========================================
+// NOTAS - COM CÁLCULOS CORRIGIDOS
+// ========================================
+async function loadNotasGrid() {
+    const c = document.getElementById('notasGridContainer'); if (!c) return;
+    const classeId = document.getElementById('notaClasse')?.value;
+    const turmaId = document.getElementById('notaTurma')?.value;
+    const discId = document.getElementById('notaDisciplina')?.value;
+    const trim = document.getElementById('notaTrimestre')?.value;
+
+    if (!classeId || !turmaId || !discId) {
+        c.innerHTML = '<div class="empty-state"><i class="fas fa-star"></i><h3>Selecione todos os filtros</h3></div>';
+        const btn = document.getElementById('btnSaveNotas'); if (btn) btn.style.display = 'none'; return;
+    }
+
+    const co = document.getElementById('notaClasse').selectedOptions[0];
+    const cn = co?.dataset?.nome || '', nm = parseInt(co?.dataset?.notamax) || 20, nmin = nm === 10 ? 5 : 10;
+    const dn = document.getElementById('notaDisciplina').selectedOptions[0]?.dataset?.nome || '';
+    const tn = document.getElementById('notaTurma').selectedOptions[0]?.dataset?.nome || '';
+    const tl = trim + 'º Trimestre';
+    const isT = ['6ª Classe', '9ª Classe', '12ª Classe', '13ª Classe'].includes(cn);
+    const tOpen = isTrimesterOpen(tl);
+    const canE = tOpen && ['super_admin', 'diretor', 'subdiretor_pedagogico', 'professor'].includes(STATE.userProfile?.role);
+
+    document.getElementById('notasGridTitle').textContent = `${cn} - ${tn} | ${dn} | ${tl}`;
+    c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+
+    try {
+        const allA = await FS_year('alunos');
+        const alunos = allA.filter(a => a.turmaId === turmaId && a.estado === 'Ativo').sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        const allN = await FS_year('notas');
+        const nMap = {};
+        allN.filter(n => n.disciplinaId === discId && n.turmaId === turmaId).forEach(n => { nMap[n.alunoId] = n; });
+
+        if (!alunos.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhum aluno ativo</h3></div>'; const btn = document.getElementById('btnSaveNotas'); if (btn) btn.style.display = 'none'; return; }
+
+        const IS = 'width:46px;text-align:center;padding:3px;border:1px solid #d1d5db;border-radius:4px;font-size:12px;';
+        let hc = '';
+        if (trim === '3' && isT) {
+            hc = '<th class="center">MAC3</th><th class="center" style="background:#e0f2fe;">MT1</th><th class="center" style="background:#e0f2fe;">MT2</th><th class="center" style="background:#fef3c7;">CT3</th><th class="center" style="background:#fce7f3;">Exame</th><th class="center" style="background:#dcfce7;">MFD</th><th class="center">Obs.</th>';
+        } else if (trim === '3') {
+            hc = '<th class="center">MAC3</th><th class="center" style="background:#e0f2fe;">MT1</th><th class="center" style="background:#e0f2fe;">MT2</th><th class="center" style="background:#dcfce7;">MF</th><th class="center">Obs.</th>';
+        } else {
+            hc = '<th class="center">MAC</th><th class="center">NPT</th><th class="center" style="background:#dcfce7;">MT</th><th class="center">Obs.</th>';
         }
 
-        await db.collection('system').doc('config').update(updateData);
-        showToast('Configurações salvas com sucesso!', 'success');
-    } catch (e) {
-        showToast('Erro: ' + e.message, 'error');
-    }
+        let h = `<div class="table-container"><table><thead><tr><th>#</th><th>Nome</th>${hc}</tr></thead><tbody>`;
+
+        alunos.forEach((a, i) => {
+            const n = nMap[a.id] || {};
+            h += `<tr><td>${i + 1}</td><td class="student-name">${a.name}</td>`;
+
+            if (trim === '3' && isT) {
+                // CT3=(MT1+MT2+MAC3)/3, MFD=CT3×60%+Exame×40%
+                const mac3 = n.mac3 ?? '', mt1 = n.mt1 ?? '', mt2 = n.mt2 ?? '', ex = n.exame ?? '';
+                const ct3 = calcCT3(mt1, mt2, mac3), mfd = calcMFD(ct3, ex), obs = getNotaObs(mfd, nmin, a.genero);
+                const ms = mfd !== '' && parseFloat(mfd) >= nmin ? 'color:#059669;font-weight:700;' : mfd !== '' ? 'color:#dc2626;font-weight:700;' : '';
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="mac3" value="${mac3}" min="0" max="${nm}" style="${IS}" ${canE ? '' : 'disabled'} onchange="rcTerminal('${a.id}',${nm},${nmin})"></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input data-aluno="${a.id}" data-field="mt1" value="${mt1}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input data-aluno="${a.id}" data-field="mt2" value="${mt2}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#fefce8;"><span data-aluno="${a.id}" data-field="ct3d">${ct3}</span></td>`;
+                h += `<td class="center" style="background:#fdf2f8;"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="exame" value="${ex}" min="0" max="${nm}" style="${IS}background:#fdf2f8;" ${canE ? '' : 'disabled'} onchange="rcTerminal('${a.id}',${nm},${nmin})"></td>`;
+                h += `<td class="center" style="background:#f0fdf4;"><span data-aluno="${a.id}" data-field="mfdd" style="${ms}">${mfd}</span></td>`;
+                h += `<td class="center"><span data-aluno="${a.id}" data-field="obsd" class="${obs.includes('Aprov') ? 'badge-status badge-approved' : obs.includes('Reprov') ? 'badge-status badge-failed' : ''}" style="font-size:10px;">${obs}</span></td>`;
+            } else if (trim === '3') {
+                const mac3 = n.mac3 ?? '', mt1 = n.mt1 ?? '', mt2 = n.mt2 ?? '';
+                const mf = calcMFNormal(mt1, mt2, mac3), obs = getNotaObs(mf, nmin, a.genero);
+                const ms = mf !== '' && parseFloat(mf) >= nmin ? 'color:#059669;font-weight:700;' : mf !== '' ? 'color:#dc2626;font-weight:700;' : '';
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="mac3" value="${mac3}" min="0" max="${nm}" style="${IS}" ${canE ? '' : 'disabled'} onchange="rcNormal('${a.id}',${nm},${nmin})"></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input data-aluno="${a.id}" data-field="mt1" value="${mt1}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#f0f9ff;"><input data-aluno="${a.id}" data-field="mt2" value="${mt2}" style="${IS}background:#f0f9ff;" disabled></td>`;
+                h += `<td class="center" style="background:#f0fdf4;"><span data-aluno="${a.id}" data-field="mfdd" style="${ms}">${mf}</span></td>`;
+                h += `<td class="center"><span data-aluno="${a.id}" data-field="obsd" class="${obs.includes('Aprov') ? 'badge-status badge-approved' : obs.includes('Reprov') ? 'badge-status badge-failed' : ''}" style="font-size:10px;">${obs}</span></td>`;
+            } else {
+                const mac = n[`mac${trim}`] ?? '', npt = n[`npt${trim}`] ?? '';
+                const mt = calcMT(mac, npt), obs = getNotaObs(mt, nmin, a.genero);
+                const ms = mt !== '' && parseFloat(mt) >= nmin ? 'color:#059669;font-weight:700;' : mt !== '' ? 'color:#dc2626;font-weight:700;' : '';
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="mac${trim}" value="${mac}" min="0" max="${nm}" style="${IS}" ${canE ? '' : 'disabled'} onchange="recalcRow(this,'${a.id}','${trim}',${nm})"></td>`;
+                h += `<td class="center"><input type="number" class="nota-input" data-aluno="${a.id}" data-field="npt${trim}" value="${npt}" min="0" max="${nm}" style="${IS}" ${canE ? '' : 'disabled'} onchange="recalcRow(this,'${a.id}','${trim}',${nm})"></td>`;
+                h += `<td class="center" style="background:#f0fdf4;"><span data-aluno="${a.id}" data-field="mt${trim}display" style="${ms}">${mt}</span></td>`;
+                h += `<td class="center"><span data-aluno="${a.id}" data-field="obs${trim}display" class="${obs.includes('Aprov') ? 'badge-status badge-approved' : obs.includes('Reprov') ? 'badge-status badge-failed' : ''}" style="font-size:10px;">${obs}</span></td>`;
+            }
+            h += '</tr>';
+        });
+        h += '</tbody></table></div>';
+        if (!tOpen) h += '<div style="margin-top:10px;padding:10px;background:#fef3c7;border-radius:8px;font-size:12px;"><i class="fas fa-lock"></i> Trimestre fechado.</div>';
+        c.innerHTML = h;
+        const btn = document.getElementById('btnSaveNotas'); if (btn) btn.style.display = canE ? 'inline-flex' : 'none';
+        STATE.cache.notasContext = { classeId, turmaId, disciplinaId: discId, trimestre: trim, classeNome: cn, discNome: dn, turmaNome: tn, notaMax: nm, isTerminal: isT, notaMin: nmin, notasMap: nMap, alunos };
+    } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+function rcTerminal(aid, nm, nmin) {
+    const g = f => document.querySelector(`[data-aluno="${aid}"][data-field="${f}"]`);
+    const mac3 = g('mac3')?.value || '', mt1 = g('mt1')?.value || '', mt2 = g('mt2')?.value || '', ex = g('exame')?.value || '';
+    const ct3 = calcCT3(mt1, mt2, mac3), mfd = calcMFD(ct3, ex);
+    const s3 = g('ct3d'), sm = g('mfdd'), so = g('obsd');
+    if (s3) s3.textContent = ct3;
+    if (sm) { sm.textContent = mfd; sm.style.color = mfd !== '' && parseFloat(mfd) >= nmin ? '#059669' : '#dc2626'; sm.style.fontWeight = '700'; }
+    if (so) { const al = STATE.cache.notasContext?.alunos?.find(a => a.id === aid); const o = getNotaObs(mfd, nmin, al?.genero); so.textContent = o; so.className = o.includes('Aprov') ? 'badge-status badge-approved' : o.includes('Reprov') ? 'badge-status badge-failed' : ''; }
+}
+function rcNormal(aid, nm, nmin) {
+    const g = f => document.querySelector(`[data-aluno="${aid}"][data-field="${f}"]`);
+    const mac3 = g('mac3')?.value || '', mt1 = g('mt1')?.value || '', mt2 = g('mt2')?.value || '';
+    const mf = calcMFNormal(mt1, mt2, mac3);
+    const sm = g('mfdd'), so = g('obsd');
+    if (sm) { sm.textContent = mf; sm.style.color = mf !== '' && parseFloat(mf) >= nmin ? '#059669' : '#dc2626'; sm.style.fontWeight = '700'; }
+    if (so) { const al = STATE.cache.notasContext?.alunos?.find(a => a.id === aid); const o = getNotaObs(mf, nmin, al?.genero); so.textContent = o; so.className = o.includes('Aprov') ? 'badge-status badge-approved' : o.includes('Reprov') ? 'badge-status badge-failed' : ''; }
+}
+
+// Save notas corrigido
+async function saveAllNotas() {
+    const ctx = STATE.cache.notasContext; if (!ctx) return;
+    const { classeId, turmaId, disciplinaId, trimestre: trim, classeNome: cn, discNome: dn, turmaNome: tn, notaMax: nm, isTerminal: isT, notaMin: nmin, notasMap: nMap, alunos } = ctx;
+    showLoading();
+    try {
+        const batch = db.batch(); let count = 0;
+        for (const al of alunos) {
+            const ex = nMap[al.id]; let data = ex ? { ...ex } : { alunoId: al.id, alunoNome: al.name, alunoGenero: al.genero, classeId, classeNome: cn, turmaId, turmaNome: tn, disciplinaId, disciplina: dn, anoLetivo: STATE.currentYear?.ano || '' };
+            delete data.docId; delete data.id;
+            if (trim === '1' || trim === '2') {
+                const mac = document.querySelector(`input[data-aluno="${al.id}"][data-field="mac${trim}"]`)?.value || '';
+                const npt = document.querySelector(`input[data-aluno="${al.id}"][data-field="npt${trim}"]`)?.value || '';
+                data[`mac${trim}`] = mac ? parseFloat(mac) : null; data[`npt${trim}`] = npt ? parseFloat(npt) : null;
+                const mt = calcMT(mac, npt); data[`mt${trim}`] = mt !== '' ? parseFloat(mt) : null;
+            } else if (trim === '3') {
+                const mac3 = document.querySelector(`input[data-aluno="${al.id}"][data-field="mac3"]`)?.value || '';
+                data.mac3 = mac3 ? parseFloat(mac3) : null;
+                if (isT) {
+                    const exm = document.querySelector(`input[data-aluno="${al.id}"][data-field="exame"]`)?.value || '';
+                    data.exame = exm ? parseFloat(exm) : null;
+                    const ct3 = calcCT3(data.mt1, data.mt2, data.mac3); data.ct3 = ct3 !== '' ? parseFloat(ct3) : null;
+                    const mfd = calcMFD(ct3, data.exame); data.mediaFinal = mfd !== '' ? parseFloat(mfd) : null;
+                    data.obs = getNotaObs(data.mediaFinal, nmin, al.genero);
+                } else {
+                    const mf = calcMFNormal(data.mt1, data.mt2, data.mac3); data.mediaFinal = mf !== '' ? parseFloat(mf) : null;
+                    data.mt3 = data.mediaFinal; data.obs = getNotaObs(data.mediaFinal, nmin, al.genero);
+                }
+            }
+            data.updatedAt = firebase.firestore.FieldValue.serverTimestamp();
+            if (ex?.id) { batch.update(yearRef().collection('notas').doc(ex.id), data); }
+            else { data.createdAt = firebase.firestore.FieldValue.serverTimestamp(); batch.set(yearRef().collection('notas').doc(), data); }
+            count++;
+        }
+        await batch.commit(); showToast(`${count} notas salvas!`, 'success'); await loadNotasGrid();
+    } catch (e) { showToast('Erro: ' + e.message, 'error'); }
     hideLoading();
 }
 
 // ========================================
-// FIX 19: NÚMERO POR EXTENSO COMPLETO
+// DECLARAÇÃO COMPLETA COM INSÍGNIA + GÊNERO
 // ========================================
-function numberToWords(num) {
-    if (num === null || num === undefined || isNaN(num)) return '';
-    num = Math.round(num);
-
-    const units = ['zero', 'um', 'dois', 'três', 'quatro', 'cinco', 'seis', 'sete',
-        'oito', 'nove', 'dez', 'onze', 'doze', 'treze', 'catorze', 'quinze',
-        'dezasseis', 'dezassete', 'dezoito', 'dezanove', 'vinte'];
-
-    if (num >= 0 && num <= 20) {
-        const word = units[num];
-        return word.charAt(0).toUpperCase() + word.slice(1) + ' valores';
-    }
-    if (num > 20) return num + ' valores';
-    return '0 valores';
-}
-
-// ========================================
-// FIX 20: YEAR SELECTOR - Actualizar dados ao mudar ano
-// ========================================
-async function selectYear(yearId) {
-    STATE.currentYearId = yearId;
-    const doc = await db.collection('schools').doc(STATE.currentSchool.id)
-        .collection('anos_letivos').doc(yearId).get();
-    if (doc.exists) {
-        STATE.currentYear = { id: doc.id, ...doc.data() };
-    }
-
-    // Limpar cache ao mudar de ano
-    STATE.cache = {};
-
-    closeModal('yearSelectorModal');
-    updateHeader();
-
-    // Re-enable realtime sync para novo ano
-    setTimeout(enableRealtimeSync, 1000);
-
-    navigateTo(STATE.currentPage);
-    showToast(`Ano letivo ${STATE.currentYear?.ano || ''} seleccionado`, 'success');
-}
-
-// ========================================
-// FIX 21: SECONDARY APP CLEANUP
-// Para evitar erro "Firebase App already exists"
-// ========================================
-async function createSecondaryAuth(email, password) {
-    const appName = 'SecAuth_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5);
-    let secondaryApp;
-
+async function generateDeclaracao(alunoId, yearId) {
+    const preview = document.getElementById('declPreview'); if (!preview) return;
+    preview.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
     try {
-        secondaryApp = firebase.initializeApp(firebaseConfig, appName);
-        const secAuth = secondaryApp.auth();
-        const cred = await secAuth.createUserWithEmailAndPassword(email, password);
-        const uid = cred.user.uid;
-        await secAuth.signOut();
+        const sid = STATE.currentSchool.id;
+        const aDoc = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yearId).collection('alunos').doc(alunoId).get();
+        const al = aDoc.data();
+        const yDoc = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yearId).get();
+        const yd = yDoc.data();
+        const sch = STATE.currentSchool;
+        const dir = getDirectorInfo();
+        const sub = await getSubdirectorPedInfo();
 
-        try { secondaryApp.delete(); } catch(e) {}
+        const allN = await FS_getAll(FS_ypC(sid, yearId, 'notas'));
+        let notas = allN.filter(n => n.alunoId === alunoId);
+        const allD = await FS_getAll(FS_ypC(sid, yearId, 'disciplinas'));
+        let discs = allD.filter(d => al.classeId ? d.classeId === al.classeId : true).sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+        notas.sort((a, b) => { const iA = discs.findIndex(d => d.id === a.disciplinaId); const iB = discs.findIndex(d => d.id === b.disciplinaId); return (iA === -1 ? 999 : iA) - (iB === -1 ? 999 : iB); });
 
-        return uid;
-    } catch (error) {
-        try { if (secondaryApp) secondaryApp.delete(); } catch(e) {}
-        throw error;
-    }
+        const ci = ANGOLA_CLASSES[al.classeNome]; const ciclo = ci?.ciclo || ''; const notaMax = ci?.notaMax || 20;
+        let nivel = 'Ensino Primário', alinea = 'b)';
+        if (ciclo === 'I Ciclo') { nivel = 'I Ciclo do Ensino Secundário Geral'; alinea = 'c)'; }
+        if (ciclo === 'II Ciclo') { nivel = 'II Ciclo do Ensino Secundário Geral'; alinea = 'e)'; }
+
+        const ff = genderWord(al.genero, 'filho', 'filha');
+        const nn = genderWord(al.genero, 'nascido', 'nascida');
+        const pp = genderWord(al.genero, 'portador', 'portadora');
+
+        // Agrupar por categoria
+        const cats = {};
+        notas.forEach(n => { const disc = discs.find(d => d.id === n.disciplinaId); const cat = disc?.categoria || ''; if (!cats[cat]) cats[cat] = []; cats[cat].push({ ...n, discData: disc }); });
+
+        let notasHTML = '';
+        Object.keys(cats).forEach(cat => {
+            if (cat && Object.keys(cats).length > 1) notasHTML += `<tr><td colspan="3" style="border:1px solid #999;padding:4px 8px;font-weight:700;background:#f8fafc;font-style:italic;">${cat}</td></tr>`;
+            cats[cat].forEach(n => {
+                const mf = n.mediaFinal ?? ''; const ext = mf !== '' ? numberToWords(Math.round(parseFloat(mf))) : '';
+                const neg = mf !== '' && parseFloat(mf) < (notaMax === 10 ? 5 : 10);
+                notasHTML += `<tr><td style="border:1px solid #ccc;padding:4px 8px;">${n.disciplina || ''}</td><td style="border:1px solid #ccc;padding:4px;text-align:center;${neg ? 'color:#dc2626;' : ''}font-weight:600;">${mf}</td><td style="border:1px solid #ccc;padding:4px;text-align:center;font-size:11px;">${ext}</td></tr>`;
+            });
+        });
+
+        preview.innerHTML = `<div class="card"><div class="card-body" id="declPrintArea" style="padding:40px;font-family:'Times New Roman',serif;font-size:13px;line-height:1.7;">
+            <div style="text-align:center;margin-bottom:20px;">
+                ${getInsigniaHTML(70)}
+                <h4 style="margin-top:8px;text-transform:uppercase;letter-spacing:1px;font-size:13px;">REPÚBLICA DE ANGOLA</h4>
+                <h4 style="font-size:12px;">MINISTÉRIO DA EDUCAÇÃO</h4>
+                <h2 style="margin-top:16px;letter-spacing:3px;font-size:20px;">DECLARAÇÃO</h2>
+            </div>
+            <p style="text-align:justify;text-indent:40px;">
+                <strong>${dir.name}</strong>, ${genderTitle(dir.genero, 'Director')} ${genderWord(dir.genero, 'do', 'da')}
+                <strong>${sch?.name || ''}</strong>${sch?.denominacao && ciclo === 'II Ciclo' ? ', denominado ' + sch.denominacao : ''},
+                ${sch?.decreto ? 'criado sobre Decreto Executivo ' + sch.decreto + ',' : ''}
+                ao abrigo do disposto na alínea ${alinea} do ${sch?.artigo || 'artigo 109°'} da
+                ${sch?.lei || 'Lei nº 32/20 de 12 de Agosto'}, declara que
+                <strong style="color:#ce1126;">${al.name || ''}</strong>,
+                ${ff} de <strong>${al.nomePai || '________'}</strong> e de <strong>${al.nomeMae || '________'}</strong>,
+                ${nn} aos ${al.dataNasc || '___/___/____'}, natural de ${al.naturalidade || '________'},
+                Município de ${al.municipio || '________'}, Província ${al.provincia || '________'},
+                ${pp} de B.I nº <strong>${al.bi || '________'}</strong>,
+                passado pelo Arquivo de Identificação de ${al.biArquivo || '________'}, aos ${al.biData || '___/___/____'},
+                frequentou no ano lectivo ${yd?.ano || '____/____'} a <strong>${al.classeNome || ''}</strong>${al.curso ? ', na área de ' + al.curso : ''},
+                com as seguintes classificações por disciplina:
+            </p>
+            <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:12px;">
+                <thead><tr style="background:#f1f5f9;">
+                    <th style="border:1px solid #999;padding:6px;text-align:left;">Disciplinas</th>
+                    <th style="border:1px solid #999;padding:6px;text-align:center;width:80px;">Média</th>
+                    <th style="border:1px solid #999;padding:6px;text-align:center;width:140px;">Média por extenso</th>
+                </tr></thead><tbody>${notasHTML}</tbody>
+            </table>
+            <p style="text-align:justify;text-indent:40px;">Para efeitos legais lhe é passada a presente <strong>Declaração</strong>, assinada por mim e autenticada com carimbo a óleo/selo branco em uso neste estabelecimento de Ensino.</p>
+            <p style="text-align:right;margin-top:24px;">${sch?.municipality || '________'}, aos ____ de ____________ de 20____</p>
+            <div style="margin-top:40px;display:flex;justify-content:space-between;">
+                ${signatureBlock('Subdiretor Pedagógico', sub.name, sub.genero)}
+                ${signatureBlock('Director', dir.name, dir.genero)}
+            </div>
+        </div>
+        <div style="padding:12px 20px;border-top:1px solid var(--gray-200);display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn btn-success" onclick="downloadDeclaracaoPDF()"><i class="fas fa-file-pdf"></i> Baixar PDF</button>
+        </div></div>`;
+        STATE.cache.declData = { aluno: al, notas, discs, yearData: yd, school: sch, classeInfo: ci, categories: cats, dir, sub };
+    } catch (e) { preview.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
 }
 
 // ========================================
-// FIX 22: GENERATE MATRICULA - Mais robusto
+// CERTIFICADO - CONFERIDO POR ALINHADO ESQUERDA
 // ========================================
-function generateMatricula() {
-    const year = STATE.currentYear?.ano?.split('/')[0] || new Date().getFullYear();
-    const rand = Math.floor(Math.random() * 900000) + 100000;
-    return `${year}${rand}`;
-}
-
-// ========================================
-// FIX 23: FIRESTORE QUERY ERROR HANDLING
-// Resolver erros de índices
-// ========================================
-async function safeQuery(collectionRef, orderByField, orderDirection = 'asc') {
+async function generateCertificado(alunoId, yearId) {
+    const preview = document.getElementById('certPreview'); if (!preview) return;
+    preview.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
     try {
-        return await collectionRef.orderBy(orderByField, orderDirection).get();
-    } catch (e) {
-        if (e.code === 'failed-precondition' || e.message.includes('index')) {
-            console.warn('Index missing, querying without order:', e.message);
-            return await collectionRef.get();
+        const sid = STATE.currentSchool.id;
+        const aDoc = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yearId).collection('alunos').doc(alunoId).get();
+        const al = aDoc.data(); const yDoc = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yearId).get(); const yd = yDoc.data(); const sch = STATE.currentSchool;
+        const dir = getDirectorInfo();
+        const cn = al.classeNome || ''; const ci = ANGOLA_CLASSES[cn]; const ciclo = ci?.ciclo || ''; const nm = ci?.notaMax || 20;
+
+        let classesRange = [];
+        if (cn === '6ª Classe') classesRange = ['1ª Classe', '2ª Classe', '3ª Classe', '4ª Classe', '5ª Classe', '6ª Classe'];
+        else if (cn === '9ª Classe') classesRange = ['7ª Classe', '8ª Classe', '9ª Classe'];
+        else if (cn === '12ª Classe' || cn === '13ª Classe') { classesRange = ['10ª Classe', '11ª Classe', '12ª Classe']; if (cn === '13ª Classe') classesRange.push('13ª Classe'); }
+
+        let nivel = 'ENSINO PRIMÁRIO', alinea = 'b)';
+        if (ciclo === 'I Ciclo') { nivel = 'I Ciclo do Ensino Secundário Geral'; alinea = 'c)'; }
+        if (ciclo === 'II Ciclo') { nivel = 'II Ciclo do Ensino Secundário Geral'; alinea = 'e)'; }
+
+        // Recolher notas de todos anos
+        const gradesByDisc = {};
+        const yearsSnap = await db.collection('schools').doc(sid).collection('anos_letivos').get();
+        for (const cName of classesRange) {
+            for (const yy of yearsSnap.docs) {
+                const clsSnap = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yy.id).collection('classes').get();
+                const cls = clsSnap.docs.find(d => d.data().nome === cName);
+                if (!cls) continue;
+                const aSnap = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yy.id).collection('alunos').get();
+                const aFound = aSnap.docs.find(d => d.data().matricula === al.matricula);
+                if (!aFound) continue;
+                const nSnap = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yy.id).collection('notas').get();
+                const dSnap = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yy.id).collection('disciplinas').get();
+                let dArr = dSnap.docs.map(d => ({ id: d.id, ...d.data() })).filter(d => d.classeId === cls.id).sort((a, b) => (a.ordem || 0) - (b.ordem || 0));
+                nSnap.docs.forEach(nd => { const n = nd.data(); if (n.alunoId === aFound.id) { const disc = dArr.find(d => d.id === n.disciplinaId); const dNm = n.disciplina || disc?.nome || ''; if (!gradesByDisc[dNm]) gradesByDisc[dNm] = { categoria: disc?.categoria || '', ordem: disc?.ordem || 999, grades: {} }; gradesByDisc[dNm].grades[cName] = n.mediaFinal; } });
+            }
         }
-        throw e;
-    }
+        // Manual history
+        const manSnap = await db.collection('schools').doc(sid).collection('historico_manual').get();
+        manSnap.docs.filter(d => d.data().alunoId === alunoId).forEach(d => { const m = d.data(); if (classesRange.includes(m.classeNome)) { (m.notas || []).forEach(n => { const dNm = n.disciplina || n.disciplinaNome || ''; if (!gradesByDisc[dNm]) gradesByDisc[dNm] = { categoria: n.categoria || '', ordem: 999, grades: {} }; gradesByDisc[dNm].grades[m.classeNome] = n.nota ?? n.mediaFinal; }); } });
+
+        const sorted = Object.entries(gradesByDisc).sort((a, b) => (a[1].ordem || 999) - (b[1].ordem || 999));
+        let totalM = 0, countM = 0;
+        sorted.forEach(([, info]) => { const vals = Object.values(info.grades).filter(v => v != null); if (vals.length) { info.media = Math.round((vals.reduce((s, v) => s + parseFloat(v), 0) / vals.length) * 10) / 10; totalM += info.media; countM++; } else info.media = null; });
+        const mediaFinal = countM ? Math.round((totalM / countM) * 10) / 10 : 0;
+
+        const ff = genderWord(al.genero, 'filho', 'filha'), nn = genderWord(al.genero, 'nascido', 'nascida'), pp = genderWord(al.genero, 'portador', 'portadora');
+
+        // Group by category
+        const catGroups = {};
+        sorted.forEach(([nome, info]) => { const cat = info.categoria || ''; if (!catGroups[cat]) catGroups[cat] = []; catGroups[cat].push([nome, info]); });
+
+        let tableHTML = '';
+        Object.keys(catGroups).forEach(cat => {
+            if (cat && Object.keys(catGroups).length > 1) tableHTML += `<tr><td colspan="${classesRange.length + 3}" style="border:1px solid #999;padding:4px 8px;font-weight:700;background:#f8fafc;font-style:italic;">${cat}</td></tr>`;
+            catGroups[cat].forEach(([nome, info]) => {
+                tableHTML += `<tr><td style="border:1px solid #ccc;padding:4px 8px;">${nome}</td>`;
+                classesRange.forEach(c => { const v = info.grades[c]; tableHTML += `<td style="border:1px solid #ccc;padding:4px;text-align:center;">${v != null ? v : '–'}</td>`; });
+                const mf = info.media, ext = mf != null ? numberToWords(Math.round(mf)) : '';
+                tableHTML += `<td style="border:1px solid #ccc;padding:4px;text-align:center;font-weight:700;">${mf ?? ''}</td><td style="border:1px solid #ccc;padding:4px;text-align:center;font-size:11px;">${ext}</td></tr>`;
+            });
+        });
+
+        preview.innerHTML = `<div class="card"><div class="card-body" id="certPrintArea" style="padding:40px;font-family:'Times New Roman',serif;font-size:13px;line-height:1.7;">
+            <div style="text-align:center;margin-bottom:20px;">${getInsigniaHTML(70)}
+                <h4 style="margin-top:8px;text-transform:uppercase;">REPÚBLICA DE ANGOLA</h4><h4 style="font-size:12px;">MINISTÉRIO DA EDUCAÇÃO</h4>
+                <h2 style="margin-top:16px;letter-spacing:3px;font-size:20px;">CERTIFICADO</h2></div>
+            <p style="text-align:justify;text-indent:40px;">
+                <strong>${dir.name}</strong>, ${genderTitle(dir.genero, 'Director')} ${genderWord(dir.genero, 'do', 'da')}
+                <strong>${sch?.name || ''}</strong>${sch?.denominacao && ciclo === 'II Ciclo' ? ', denominado ' + sch.denominacao : ''},
+                ${sch?.decreto ? 'criado sobre Decreto Executivo ' + sch.decreto + ',' : ''}
+                ao abrigo do disposto na alínea ${alinea} do ${sch?.artigo || 'artigo 109°'} da ${sch?.lei || 'Lei nº 32/20 de 12 de Agosto'},
+                certifica que <strong style="color:#ce1126;">${al.name || ''}</strong>,
+                ${ff} de <strong>${al.nomePai || '________'}</strong> e de <strong>${al.nomeMae || '________'}</strong>,
+                ${nn} aos ${al.dataNasc || '___/___/____'}, natural de ${al.naturalidade || '________'},
+                Município de ${al.municipio || '________'}, Província de ${al.provincia || '________'},
+                ${pp} de B.I nº <strong>${al.bi || '________'}</strong>,
+                passado pelo Arquivo de Identificação de ${al.biArquivo || '________'}, aos ${al.biData || '___/___/____'},
+                concluiu no ano lectivo ${yd?.ano || '____/____'} o <strong>${nivel}</strong>${al.curso ? ', na área de <strong>' + al.curso + '</strong>' : ''},
+                conforme consta do processo individual nº <strong>${al.processo || '____'}</strong>,
+                com a média final de <strong>${mediaFinal} Valores</strong>, obtidas pelas seguintes classificações por disciplinas:
+            </p>
+            <table style="width:100%;border-collapse:collapse;margin:16px 0;font-size:12px;"><thead><tr style="background:#f1f5f9;">
+                <th style="border:1px solid #999;padding:6px;text-align:left;">Disciplinas</th>
+                ${classesRange.map(c => `<th style="border:1px solid #999;padding:4px;text-align:center;font-size:11px;">${c.replace(' Classe', 'ª')}</th>`).join('')}
+                <th style="border:1px solid #999;padding:4px;text-align:center;">Média Final</th>
+                <th style="border:1px solid #999;padding:4px;text-align:center;">Média por extenso</th>
+            </tr></thead><tbody>${tableHTML}</tbody></table>
+            <p style="text-align:justify;text-indent:40px;">Para efeitos legais lhe é passado o presente <strong>Certificado</strong>, que consta no livro de registo nº ______, folha ____, assinado por mim e autenticado com carimbo a óleo/selo branco em uso neste estabelecimento de Ensino.</p>
+            <p style="text-align:center;margin-top:16px;text-transform:uppercase;">${sch?.name || ''}, AOS ____ DE ____________ DE 20____</p>
+
+            <!-- Conferido por: alinhado à esquerda -->
+            <div style="margin-top:40px;text-align:left;">
+                <p>Conferido por:</p>
+                <div style="margin-top:4px;">
+                    <div style="font-size:11px;">${genderTitle(dir.genero, 'Director')}</div>
+                    <div style="border-top:1px solid #000;width:200px;margin:25px 0 4px;"></div>
+                    <div style="font-weight:700;font-size:12px;">${dir.name}</div>
+                </div>
+            </div>
+        </div>
+        <div style="padding:12px 20px;border-top:1px solid var(--gray-200);display:flex;gap:8px;justify-content:flex-end;">
+            <button class="btn btn-success" onclick="downloadCertificadoPDF()"><i class="fas fa-file-pdf"></i> Baixar PDF</button>
+        </div></div>`;
+        STATE.cache.certData = { aluno: al, yearData: yd, school: sch, classesRange, sortedDiscs: sorted, catGroups, mediaFinal, nivelNome: nivel, alinea, ciclo, dir };
+    } catch (e) { preview.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
 }
 
 // ========================================
-// FIX 24: PREVENT DOUBLE CLICK ON BUTTONS
+// PAGAMENTOS → RECEITA AUTOMÁTICA + DEVEDORES
 // ========================================
-document.addEventListener('click', (e) => {
-    const btn = e.target.closest('.btn');
-    if (btn && !btn.disabled) {
-        // Debounce button clicks
-        if (btn.dataset.clicking) {
-            e.preventDefault();
-            e.stopPropagation();
-            return;
+async function renderPagamentos() {
+    const content = document.getElementById('pageContent');
+    if (!STATE.currentSchool || !STATE.currentYearId) { content.innerHTML = '<div class="empty-state"><h3>Ano letivo necessário</h3></div>'; return; }
+
+    content.innerHTML = `<div class="page-header"><div><h2><i class="fas fa-money-bill-wave"></i> Pagamentos</h2></div>
+        <div class="page-actions"><button class="btn btn-primary" onclick="openNewPagamentoModal()"><i class="fas fa-plus"></i> Novo</button>
+        <button class="btn btn-secondary" onclick="exportPagamentosXLSX()"><i class="fas fa-file-excel"></i> XLSX</button></div></div>
+        <div class="stats-grid" id="pagStats"></div>
+        <div class="tabs"><div class="tab active" onclick="swPagTab('pag')">Pagamentos</div><div class="tab" onclick="swPagTab('dev')">Devedores</div></div>
+        <div id="pagTabPag"><div class="card"><div class="card-header"><h3>Registos</h3><div class="search-box" style="min-width:200px;"><i class="fas fa-search"></i><input type="text" id="searchPag" placeholder="Pesquisar..." oninput="filterPagLocal()"></div></div><div class="card-body"><div class="table-container" id="pagTableContainer"><div class="spinner" style="margin:20px auto;"></div></div></div></div></div>
+        <div id="pagTabDev" style="display:none;"><div class="card"><div class="card-header"><h3><i class="fas fa-exclamation-triangle"></i> Devedores</h3><div class="page-actions"><button class="btn btn-secondary btn-sm" onclick="exportDevedoresXLSX()"><i class="fas fa-file-excel"></i></button><button class="btn btn-secondary btn-sm" onclick="exportDevedoresPDF()"><i class="fas fa-file-pdf"></i></button></div></div><div class="card-body" id="devedoresContainer"><div class="spinner" style="margin:20px auto;"></div></div></div></div>`;
+
+    await loadPagamentosTable();
+}
+
+function swPagTab(t) {
+    document.getElementById('pagTabPag').style.display = t === 'pag' ? 'block' : 'none';
+    document.getElementById('pagTabDev').style.display = t === 'dev' ? 'block' : 'none';
+    document.querySelectorAll('.tabs .tab').forEach((el, i) => el.classList.toggle('active', (t === 'pag' && i === 0) || (t === 'dev' && i === 1)));
+    if (t === 'dev') loadDevedores();
+}
+
+async function loadPagamentosTable() {
+    const c = document.getElementById('pagTableContainer'); if (!c) return;
+    try {
+        let pags = await FS_year('pagamentos'); pags.sort((a, b) => (b.data || '').localeCompare(a.data || ''));
+        STATE.cache.pagamentos = pags;
+        let total = pags.reduce((s, p) => s + (p.valor || 0), 0);
+        const stats = document.getElementById('pagStats');
+        if (stats) stats.innerHTML = `<div class="stat-card"><div class="stat-icon green"><i class="fas fa-money-bill-wave"></i></div><div class="stat-info"><h4>${pags.length}</h4><p>Pagamentos</p></div></div><div class="stat-card"><div class="stat-icon blue"><i class="fas fa-coins"></i></div><div class="stat-info"><h4>${formatCurrency(total)}</h4><p>Total</p></div></div>`;
+        renderPagTableData(pags);
+    } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+// SAVE PAGAMENTO + ADD RECEITA
+savePagamento = async function () {
+    const alunoId = document.getElementById('pagAlunoId')?.value, alunoNome = document.getElementById('pagAlunoNome')?.value;
+    const tOpt = document.getElementById('pagTitulo')?.selectedOptions[0], valor = parseFloat(document.getElementById('pagValor')?.value);
+    if (!alunoId || !tOpt?.value || !valor) { showToast('Preencha tudo!', 'error'); return; }
+    const recibo = 'REC-' + Date.now().toString(36).toUpperCase();
+    const pData = { alunoId, alunoNome, tituloId: tOpt.value, titulo: tOpt.dataset.nome || '', valor, data: document.getElementById('pagData')?.value || new Date().toISOString().split('T')[0], formaPagamento: document.getElementById('pagForma')?.value || 'Numerário', referencia: document.getElementById('pagReferencia')?.value?.trim() || '', observacoes: document.getElementById('pagObs')?.value?.trim() || '', recibo, createdAt: firebase.firestore.FieldValue.serverTimestamp() };
+    showLoading();
+    try {
+        await yearRef().collection('pagamentos').add(pData);
+        // ADICIONAR À RECEITA
+        await yearRef().collection('movimentos_financeiros').add({ tipo: 'Receita', data: pData.data, valor, descricao: `Pagamento: ${pData.titulo} - ${alunoNome}`, categoria: 'Propinas', observacoes: `Recibo: ${recibo}`, autoGerado: true, createdAt: firebase.firestore.FieldValue.serverTimestamp() });
+        showToast('Pagamento registado + receita adicionada! Recibo: ' + recibo, 'success');
+        closeModal('pagModal'); await loadPagamentosTable();
+    } catch (e) { showToast('Erro: ' + e.message, 'error'); }
+    hideLoading();
+};
+
+// DEVEDORES
+async function loadDevedores() {
+    const c = document.getElementById('devedoresContainer'); if (!c) return;
+    c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+    try {
+        const titulos = (await FS_school('titulos_pagamento')).filter(t => t.ativo !== false);
+        if (!titulos.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhum título configurado</h3></div>'; return; }
+        const alunos = (await FS_year('alunos')).filter(a => a.estado === 'Ativo');
+        const pags = await FS_year('pagamentos');
+        const valAnual = titulos.filter(t => t.periodicidade === 'Anual').reduce((s, t) => s + (t.valor || 0), 0);
+        const valMensal = titulos.filter(t => t.periodicidade === 'Mensal').reduce((s, t) => s + (t.valor || 0), 0);
+        const totalEsp = valAnual + (valMensal * 10);
+        const devs = [];
+        alunos.forEach(a => {
+            const pago = pags.filter(p => p.alunoId === a.id).reduce((s, p) => s + (p.valor || 0), 0);
+            const div = totalEsp - pago;
+            if (div > 0) devs.push({ ...a, totalPago: pago, totalEsperado: totalEsp, divida: div });
+        });
+        devs.sort((a, b) => b.divida - a.divida);
+        STATE.cache.devedores = devs;
+        if (!devs.length) { c.innerHTML = '<div class="empty-state" style="color:var(--secondary);"><i class="fas fa-check-circle"></i><h3>Sem devedores!</h3></div>'; return; }
+        let h = `<p style="margin-bottom:12px;font-size:13px;">Total: <strong>${devs.length}</strong> devedores | Dívida total: <strong style="color:var(--danger);">${formatCurrency(devs.reduce((s, d) => s + d.divida, 0))}</strong></p>`;
+        h += '<table><thead><tr><th>#</th><th>Nome</th><th>Classe</th><th>Turma</th><th class="center">Pago</th><th class="center">Esperado</th><th class="center" style="color:var(--danger);">Dívida</th></tr></thead><tbody>';
+        devs.forEach((d, i) => { h += `<tr><td>${i + 1}</td><td class="student-name">${d.name || ''}</td><td>${d.classeNome || ''}</td><td>${d.turmaNome || ''}</td><td class="center" style="color:#059669;">${formatCurrency(d.totalPago)}</td><td class="center">${formatCurrency(d.totalEsperado)}</td><td class="center" style="color:#dc2626;font-weight:700;">${formatCurrency(d.divida)}</td></tr>`; });
+        h += '</tbody></table>'; c.innerHTML = h;
+    } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; }
+}
+
+function exportDevedoresXLSX() {
+    const d = STATE.cache.devedores || []; if (!d.length) { showToast('Sem devedores', 'info'); return; }
+    const data = d.map((x, i) => ({ '#': i + 1, Nome: x.name, Classe: x.classeNome, Turma: x.turmaNome, Matrícula: x.matricula, Pago: x.totalPago, Esperado: x.totalEsperado, Dívida: x.divida, Encarregado: x.encNome, 'Tel.': x.encTelefone1 }));
+    const ws = XLSX.utils.json_to_sheet(data); const wb = XLSX.utils.book_new(); XLSX.utils.book_append_sheet(wb, ws, 'Devedores'); XLSX.writeFile(wb, `Devedores_${STATE.currentYear?.ano || ''}.xlsx`); showToast('OK!', 'success');
+}
+
+function exportDevedoresPDF() {
+    const d = STATE.cache.devedores || []; if (!d.length) return;
+    const { jsPDF } = window.jspdf; const pdf = new jsPDF();
+    pdf.setFontSize(14); pdf.setFont(undefined, 'bold'); pdf.text('LISTA DE DEVEDORES', 105, 15, { align: 'center' });
+    pdf.setFontSize(10); pdf.setFont(undefined, 'normal'); pdf.text(`${STATE.currentSchool?.name || ''} | ${STATE.currentYear?.ano || ''}`, 105, 22, { align: 'center' });
+    let y = 34; pdf.setFontSize(8); pdf.setFont(undefined, 'bold'); pdf.text('#', 10, y); pdf.text('Nome', 18, y); pdf.text('Classe', 90, y); pdf.text('Pago', 120, y); pdf.text('Esperado', 145, y); pdf.text('Dívida', 175, y); pdf.setFont(undefined, 'normal'); y += 5; pdf.line(10, y, 200, y); y += 3;
+    d.forEach((x, i) => { if (y > 280) { pdf.addPage(); y = 15; } pdf.text(String(i + 1), 10, y); pdf.text((x.name || '').substring(0, 35), 18, y); pdf.text((x.classeNome || '').substring(0, 12), 90, y); pdf.text(formatCurrency(x.totalPago).substring(0, 14), 120, y); pdf.text(formatCurrency(x.totalEsperado).substring(0, 14), 145, y); pdf.setTextColor(220, 38, 38); pdf.text(formatCurrency(x.divida).substring(0, 14), 175, y); pdf.setTextColor(0); y += 4.5; });
+    pdf.save(`Devedores_${STATE.currentYear?.ano || ''}.pdf`); showToast('OK!', 'success');
+}
+
+// ========================================
+// HELPERS SEM INDEX
+// ========================================
+async function getDisciplinasForClasse(cid) { if (!STATE.currentYearId || !cid) return []; return (await FS_year('disciplinas')).filter(d => d.classeId === cid).sort((a, b) => (a.ordem || 0) - (b.ordem || 0)); }
+async function getTurmasForClasse(cid) { if (!STATE.currentYearId || !cid) return []; return (await FS_year('turmas')).filter(t => t.classeId === cid); }
+async function getAllClasses() { if (!STATE.currentYearId) return []; return (await FS_year('classes')).sort((a, b) => (a.ordem || 0) - (b.ordem || 0)); }
+async function getAllProfessors() { if (!STATE.currentSchool) return []; return (await FS_school('professores')).sort((a, b) => (a.name || '').localeCompare(b.name || '')); }
+async function loadClassesTable() { const c = document.getElementById('classesTableContainer'); if (!c) return; if (!STATE.currentYearId) { c.innerHTML = '<div class="empty-state"><h3>Abra um ano letivo</h3></div>'; return; } try { const cls = await getAllClasses(); STATE.cache.classes = cls; const el = document.getElementById('statTotalClasses'); if (el) el.textContent = cls.length; renderClassesTableData(cls); } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function loadTurmasTable() { const c = document.getElementById('turmasTableContainer'); if (!c) return; if (!STATE.currentYearId) { c.innerHTML = '<div class="empty-state"><h3>Abra um ano letivo</h3></div>'; return; } try { let t = await FS_year('turmas'); t.sort((a, b) => (a.nome || '').localeCompare(b.nome || '')); const fc = document.getElementById('filterTurmaClasse')?.value, ft = document.getElementById('filterTurmaTurno')?.value; if (fc) t = t.filter(x => x.classeId === fc); if (ft) t = t.filter(x => x.turnoId === ft); STATE.cache.turmas = t; if (!t.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhuma turma</h3></div>'; return; } const cm = ['super_admin', 'diretor', 'subdiretor_pedagogico', 'secretario', 'coordenador'].includes(STATE.userProfile?.role); let h = `<table><thead><tr><th>#</th><th>Código</th><th>Turma</th><th>Classe</th><th>Curso</th><th>Turno</th><th>Sala</th><th class="center">Alunos</th><th class="center">Cap.</th><th>Lot.</th>${cm ? '<th>Acções</th>' : ''}</tr></thead><tbody>`; t.forEach((x, i) => { const p = x.capacidade ? Math.round((x.numAlunos || 0) / x.capacidade * 100) : 0; const l = p >= 100 ? 'Cheia' : p >= 80 ? 'Quase Cheia' : 'Disponível'; const lc = p >= 100 ? 'badge-inactive' : p >= 80 ? 'badge-pending' : 'badge-active'; h += `<tr><td>${i + 1}</td><td><code>${x.codigo || ''}</code></td><td><strong>${x.nome || ''}</strong></td><td>${x.classeNome || ''}</td><td>${x.curso || '-'}</td><td>${x.turnoNome || ''}</td><td>${x.sala || '-'}</td><td class="center">${x.numAlunos || 0}</td><td class="center">${x.capacidade || '-'}</td><td><span class="badge-status ${lc}">${l}</span></td>${cm ? `<td><button class="btn btn-sm btn-primary" onclick="editTurma('${x.id}')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-danger" onclick="deleteTurma('${x.id}')"><i class="fas fa-trash"></i></button></td>` : ''}</tr>`; }); h += '</tbody></table>'; c.innerHTML = h; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function loadDisciplinasTable() { const c = document.getElementById('disciplinasTableContainer'); if (!c) return; if (!STATE.currentYearId) { c.innerHTML = '<div class="empty-state"><h3>Abra um ano letivo</h3></div>'; return; } try { let d = await FS_year('disciplinas'); const fc = document.getElementById('filterDiscClasse')?.value; if (fc) d = d.filter(x => x.classeId === fc); d.sort((a, b) => (a.ordem || 0) - (b.ordem || 0)); STATE.cache.disciplinas = d; renderDisciplinasTableData(d); } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function loadTurnosData() { try { let t = await FS_school('turnos'); t.sort((a, b) => (a.ordem || 0) - (b.ordem || 0)); STATE.cache.turnos = t; renderTurnosCards(t); renderTurnosTable(t); } catch (e) { } }
+async function loadFuncionariosTable() { const c = document.getElementById('funcTableContainer'); if (!c) return; try { let f = await FS_school('funcionarios'); f.sort((a, b) => (a.name || '').localeCompare(b.name || '')); const fc = document.getElementById('filterFuncCargo')?.value; if (fc) f = f.filter(x => (x.cargo || '').includes(fc)); STATE.cache.funcionarios = f; renderFuncTableData(f); } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function loadProfessoresTable() { const c = document.getElementById('profsTableContainer'); if (!c) return; try { let p = await FS_school('professores'); p.sort((a, b) => (a.name || '').localeCompare(b.name || '')); STATE.cache.professores = p; const s = document.getElementById('profStats'); if (s) s.innerHTML = `<div class="stat-card"><div class="stat-icon green"><i class="fas fa-chalkboard-teacher"></i></div><div class="stat-info"><h4>${p.length}</h4><p>Total</p></div></div>`; renderProfsTableData(p); } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function loadYearsTable() { const c = document.getElementById('yearsTable'); if (!c) return; try { let y = await FS_school('anos_letivos'); y.sort((a, b) => (b.ano || '').localeCompare(a.ano || '')); if (!y.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhum ano letivo</h3></div>'; return; } const cm = ['super_admin', 'diretor'].includes(STATE.userProfile?.role); let h = '<table><thead><tr><th>#</th><th>Código</th><th>Ano</th><th>Início</th><th>Fim</th><th>Trim.</th><th>Estado</th>' + (cm ? '<th>Acções</th>' : '') + '</tr></thead><tbody>'; y.forEach((x, i) => { const sc = x.status === 'aberto' ? 'badge-active' : x.status === 'fechado' ? 'badge-inactive' : 'badge-pending'; let ti = ''; if (x.trimestres) ti = Object.keys(x.trimestres).map(t => `<small class="badge-status ${x.trimestres[t] === 'aberto' ? 'badge-active' : 'badge-inactive'}" style="margin:1px;">${t}: ${x.trimestres[t]}</small>`).join(' '); h += `<tr><td>${i + 1}</td><td>${x.codigo || ''}</td><td><strong>${x.ano}</strong></td><td>${x.inicio || '-'}</td><td>${x.fim || '-'}</td><td>${ti || '-'}</td><td><span class="badge-status ${sc}">${x.status || 'pendente'}</span></td>${cm ? `<td><div style="display:flex;gap:3px;flex-wrap:wrap;">${x.status !== 'aberto' ? `<button class="btn btn-sm btn-success" onclick="changeYearStatus('${x.id}','aberto')"><i class="fas fa-lock-open"></i></button>` : ''} ${x.status === 'aberto' ? `<button class="btn btn-sm btn-danger" onclick="changeYearStatus('${x.id}','fechado')"><i class="fas fa-lock"></i></button>` : ''} <button class="btn btn-sm btn-primary" onclick="editYear('${x.id}')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-warning" onclick="manageTrimesters('${x.id}')"><i class="fas fa-calendar-check"></i></button></div></td>` : ''}</tr>`; }); h += '</tbody></table>'; c.innerHTML = h; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function loadAtribuicoesTable() { const c = document.getElementById('atribuicoesTableContainer'); if (!c) return; if (!STATE.currentYearId) { c.innerHTML = '<div class="empty-state"><h3>Abra um ano letivo</h3></div>'; return; } try { let a = await FS_year('atribuicoes'); const fp = document.getElementById('filterAtribProf')?.value, fc = document.getElementById('filterAtribClasse')?.value; if (fp) a = a.filter(x => x.professorId === fp); if (fc) a = a.filter(x => x.classeId === fc); STATE.cache.atribuicoes = a; const cm = ['super_admin', 'diretor', 'subdiretor_pedagogico'].includes(STATE.userProfile?.role); if (!a.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhuma atribuição</h3></div>'; return; } let h = `<table><thead><tr><th>#</th><th>Professor</th><th>Disciplina</th><th>Classe</th><th>Turma</th><th>Curso</th>${cm ? '<th>Acções</th>' : ''}</tr></thead><tbody>`; a.forEach((x, i) => { h += `<tr><td>${i + 1}</td><td><strong>${x.professorNome || ''}</strong></td><td>${x.disciplinaNome || ''}</td><td>${x.classeNome || ''}</td><td>${x.turmaNome || ''}</td><td>${x.curso || '-'}</td>${cm ? `<td><button class="btn btn-sm btn-primary" onclick="editAtribuicao('${x.id}')"><i class="fas fa-edit"></i></button> <button class="btn btn-sm btn-danger" onclick="deleteAtribuicao('${x.id}')"><i class="fas fa-trash"></i></button></td>` : ''}</tr>`; }); h += '</tbody></table>'; c.innerHTML = h; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function loadFaltasProfs() { const c = document.getElementById('faltasProfsContainer'); if (!c) return; try { let f = await FS_school('faltas_professores'); f.sort((a, b) => (b.data || '').localeCompare(a.data || '')); if (!f.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhuma falta</h3></div>'; return; } let h = '<table><thead><tr><th>#</th><th>Data</th><th>Professor</th><th>Motivo</th><th>Substituto</th><th>Acções</th></tr></thead><tbody>'; f.slice(0, 50).forEach((x, i) => { h += `<tr><td>${i + 1}</td><td>${x.data || ''}</td><td><strong>${x.professorNome || ''}</strong></td><td>${x.motivo || '-'}</td><td>${x.substitutoNome || '-'}</td><td><button class="btn btn-sm btn-danger" onclick="deleteFaltaProf('${x.id}')"><i class="fas fa-trash"></i></button></td></tr>`; }); h += '</tbody></table>'; c.innerHTML = h; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function checkNotifications() { if (!STATE.currentSchool || !STATE.userProfile) return; try { const all = await FS_school('mensagens'); const n = all.filter(m => m.destinatarioId === STATE.userProfile.id && !m.lida).length; const d = document.getElementById('msgNotif'), nd = document.getElementById('notifDot'); if (n > 0) { if (d) d.classList.remove('hidden'); if (nd) nd.classList.remove('hidden'); } else { if (d) d.classList.add('hidden'); } } catch (e) { } }
+
+// Presenças, Boletins, Pautas, Passes, Mensagens - já corrigidos nos blocos anteriores
+// Este script sobrescreve TODAS as funções problemáticas
+
+// ========================================
+// MENSAGENS (manter do script anterior se existir)
+// ========================================
+async function renderMensagens() {
+    const content = document.getElementById('pageContent');
+    if (!STATE.currentSchool) { content.innerHTML = '<div class="empty-state"><h3>Selecione escola</h3></div>'; return; }
+    content.innerHTML = `<div class="page-header"><div><h2><i class="fas fa-comments"></i> Mensagens</h2></div><div class="page-actions"><button class="btn btn-primary" onclick="openMsgSend()"><i class="fas fa-paper-plane"></i> Nova</button></div></div>
+    <div class="tabs" id="mtabs"><div class="tab active" onclick="loadMsgTab('in')">📥 Recebidas</div><div class="tab" onclick="loadMsgTab('out')">📤 Enviadas</div><div class="tab" onclick="loadMsgTab('wall')">📢 Mural</div></div>
+    <div id="marea"><div class="spinner" style="margin:20px auto;"></div></div>`;
+    await loadMsgTab('in');
+}
+async function loadMsgTab(tab) {
+    const a = document.getElementById('marea'); if (!a) return;
+    a.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+    document.querySelectorAll('#mtabs .tab').forEach((t, i) => t.classList.toggle('active', ['in', 'out', 'wall'].indexOf(tab) === i));
+    const uid = STATE.userProfile?.id;
+    try {
+        if (tab === 'in') {
+            const all = await FS_school('mensagens');
+            const msgs = all.filter(m => m.destinatarioId === uid).sort((x, y) => (y.createdAt?.seconds || 0) - (x.createdAt?.seconds || 0));
+            if (!msgs.length) { a.innerHTML = '<div class="card"><div class="card-body"><div class="empty-state"><i class="fas fa-inbox"></i><h3>Caixa vazia</h3></div></div></div>'; return; }
+            let h = '<div class="card"><div class="card-body">';
+            msgs.forEach(m => { const dt = m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString('pt-AO') : ''; const ur = !m.lida; h += `<div style="padding:12px;border:1px solid ${ur ? 'var(--primary)' : 'var(--gray-200)'};border-radius:8px;margin-bottom:8px;cursor:pointer;${ur ? 'background:rgba(26,86,219,0.03);border-left:3px solid var(--primary);' : ''}" onclick="openMsgRead('${m.id}')"><div style="display:flex;justify-content:space-between;"><strong>${m.remetenteNome || 'Sistema'}</strong><small style="color:var(--gray-500);">${dt}</small></div><div style="font-weight:${ur ? '700' : '400'};margin-top:4px;">${m.assunto || 'Sem assunto'}</div><div style="font-size:12px;color:var(--gray-600);margin-top:2px;">${(m.mensagem || '').substring(0, 120)}</div>${ur ? '<span class="badge-status badge-info" style="font-size:9px;margin-top:4px;">Nova</span>' : ''}</div>`; });
+            h += '</div></div>'; a.innerHTML = h;
+        } else if (tab === 'out') {
+            const all = await FS_school('mensagens');
+            const msgs = all.filter(m => m.remetenteId === uid).sort((x, y) => (y.createdAt?.seconds || 0) - (x.createdAt?.seconds || 0));
+            if (!msgs.length) { a.innerHTML = '<div class="card"><div class="card-body"><div class="empty-state"><h3>Nada enviado</h3></div></div></div>'; return; }
+            let h = '<div class="card"><div class="card-body">';
+            msgs.forEach(m => { const dt = m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString('pt-AO') : ''; h += `<div style="padding:12px;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:8px;"><div style="display:flex;justify-content:space-between;"><strong>Para: ${m.destinatarioNome || 'Todos'}</strong><small style="color:var(--gray-500);">${dt}</small></div><div style="margin-top:4px;">${m.assunto || ''}</div></div>`; });
+            h += '</div></div>'; a.innerHTML = h;
+        } else {
+            const avs = await FS_school('avisos'); avs.sort((x, y) => (y.createdAt?.seconds || 0) - (x.createdAt?.seconds || 0));
+            let h = `<div class="card"><div class="card-header"><h3>📢 Mural</h3><button class="btn btn-primary btn-sm" onclick="openNewAvisoModal()"><i class="fas fa-plus"></i> Novo</button></div><div class="card-body">`;
+            if (!avs.length) h += '<div class="empty-state"><h3>Nenhum aviso</h3></div>';
+            else avs.forEach(av => { const dt = av.createdAt?.toDate ? av.createdAt.toDate().toLocaleDateString('pt-AO') : ''; h += `<div style="padding:12px;border-left:4px solid var(--angola-red);background:#fafafa;border-radius:0 8px 8px 0;margin-bottom:10px;"><h4>${av.titulo || ''}</h4><p style="margin-top:6px;white-space:pre-wrap;">${av.conteudo || ''}</p><small style="color:var(--gray-500);">Por: ${av.autorNome || ''} | ${dt}</small></div>`; });
+            h += '</div></div>'; a.innerHTML = h;
         }
-        btn.dataset.clicking = 'true';
-        setTimeout(() => { delete btn.dataset.clicking; }, 1000);
-    }
-});
-
-// ========================================
-// FIX 25: TOAST IMPROVEMENTS
-// ========================================
-function showToast(message, type = 'success') {
-    const container = document.getElementById('toastContainer');
-    if (!container) return;
-
-    const icons = {
-        success: 'check-circle',
-        error: 'exclamation-circle',
-        warning: 'exclamation-triangle',
-        info: 'info-circle'
-    };
-
-    // Limitar a 5 toasts simultâneos
-    while (container.children.length >= 5) {
-        container.removeChild(container.firstChild);
-    }
-
-    const toast = document.createElement('div');
-    toast.className = `toast ${type}`;
-    toast.innerHTML = `<i class="fas fa-${icons[type] || 'info-circle'}"></i> <span>${message}</span>`;
-    toast.style.cursor = 'pointer';
-    toast.onclick = () => toast.remove();
-
-    container.appendChild(toast);
-
-    const duration = type === 'error' ? 6000 : type === 'warning' ? 5000 : 3500;
-    setTimeout(() => {
-        if (toast.parentNode) {
-            toast.style.opacity = '0';
-            toast.style.transform = 'translateX(100%)';
-            setTimeout(() => { if (toast.parentNode) toast.remove(); }, 300);
-        }
-    }, duration);
+    } catch (e) { a.innerHTML = `<div class="card"><div class="card-body"><p style="color:var(--danger);">${e.message}</p></div></div>`; }
 }
+async function openMsgRead(id) { try { await schoolRef().collection('mensagens').doc(id).update({ lida: true }); const doc = await schoolRef().collection('mensagens').doc(id).get(); const m = doc.data(); const dt = m.createdAt?.toDate ? m.createdAt.toDate().toLocaleString('pt-AO') : ''; const ml = `<div id="rmModal" class="modal-overlay"><div class="modal"><div class="modal-header" style="background:var(--primary);color:#fff;"><h3>${m.assunto || 'Mensagem'}</h3><button class="modal-close" onclick="closeModal('rmModal')" style="color:#fff;">&times;</button></div><div class="modal-body"><p style="font-size:12px;color:var(--gray-500);margin-bottom:12px;">De: <strong>${m.remetenteNome || ''}</strong> | ${dt}</p><div style="padding:16px;background:var(--gray-100);border-radius:8px;white-space:pre-wrap;line-height:1.7;">${m.mensagem || ''}</div></div><div class="modal-footer"><button class="btn btn-primary btn-sm" onclick="closeModal('rmModal');openMsgSend({destId:'${m.remetenteId}',destNome:'${(m.remetenteNome || '').replace(/'/g, "\\'")}',assunto:'Re: ${(m.assunto || '').replace(/'/g, "\\'")}'})"><i class="fas fa-reply"></i> Responder</button><button class="btn btn-secondary" onclick="closeModal('rmModal')">Fechar</button></div></div></div>`; document.getElementById('rmModal')?.remove(); document.body.insertAdjacentHTML('beforeend', ml); openModal('rmModal'); await loadMsgTab('in'); } catch (e) { showToast(e.message, 'error'); } }
+function openMsgSend(pre = {}) { const ml = `<div id="smModal" class="modal-overlay"><div class="modal modal-lg"><div class="modal-header" style="background:var(--primary);color:#fff;"><h3><i class="fas fa-paper-plane"></i> Nova Mensagem</h3><button class="modal-close" onclick="closeModal('smModal')" style="color:#fff;">&times;</button></div><div class="modal-body"><div class="form-row"><div class="form-group"><label>Enviar para</label><select id="smT" onchange="document.getElementById('smIG').style.display=this.value==='ind'?'block':'none';document.getElementById('smCG').style.display=this.value==='cargo'?'block':'none';"><option value="ind" ${pre.destId ? 'selected' : ''}>Individual</option><option value="cargo">Por Cargo</option><option value="all">Todos</option></select></div><div class="form-group" id="smCG" style="display:none;"><label>Cargo</label><select id="smCS"><option value="diretor">Director</option><option value="subdiretor_pedagogico">Sub. Pedagógico</option><option value="subdiretor_administrativo">Sub. Administrativo</option><option value="secretario">Secretário</option><option value="professor">Professores</option></select></div></div><div id="smIG" class="form-group">${pre.destNome ? `<div style="padding:8px;background:var(--gray-100);border-radius:8px;">Para: <strong>${pre.destNome}</strong></div><input type="hidden" id="smDI" value="${pre.destId}"><input type="hidden" id="smDN" value="${pre.destNome}">` : `<label>Pesquisar</label><input type="text" id="smSR" placeholder="Nome..." oninput="smSrch()"><div id="smRS" style="max-height:100px;overflow-y:auto;margin-top:4px;"></div><input type="hidden" id="smDI" value=""><input type="hidden" id="smDN" value="">`}</div><div class="form-group"><label>Assunto *</label><input type="text" id="smAS" value="${pre.assunto || ''}" placeholder="Assunto"></div><div class="form-group"><label>Mensagem *</label><textarea id="smMG" rows="5" placeholder="Mensagem..."></textarea></div></div><div class="modal-footer"><button class="btn btn-secondary" onclick="closeModal('smModal')">Cancelar</button><button class="btn btn-primary" onclick="doSend()"><i class="fas fa-paper-plane"></i> Enviar</button></div></div></div>`; document.getElementById('smModal')?.remove(); document.body.insertAdjacentHTML('beforeend', ml); openModal('smModal'); }
+const smSrch = debounce(async function () { const s = (document.getElementById('smSR')?.value || '').toLowerCase(); const r = document.getElementById('smRS'); if (!r || s.length < 2) { if (r) r.innerHTML = ''; return; } try { let f = []; if (STATE.currentSchool?.directorName?.toLowerCase().includes(s)) f.push({ id: STATE.currentSchool.directorId, nm: STATE.currentSchool.directorName, cg: 'Director' }); (await FS_school('professores')).filter(p => (p.name || '').toLowerCase().includes(s)).forEach(p => f.push({ id: p.uid || p.id, nm: p.name, cg: 'Professor' })); (await FS_school('funcionarios')).filter(p => (p.name || '').toLowerCase().includes(s)).forEach(p => f.push({ id: p.uid || p.id, nm: p.name, cg: p.cargo || 'Func.' })); let h = ''; f.slice(0, 6).forEach(x => { h += `<div style="padding:5px;border:1px solid var(--gray-200);border-radius:4px;margin-bottom:2px;cursor:pointer;font-size:12px;" onclick="document.getElementById('smDI').value='${x.id}';document.getElementById('smDN').value='${x.nm.replace(/'/g, "\\'")}';document.getElementById('smRS').innerHTML='<div style=\\'padding:4px;background:var(--gray-100);border-radius:4px;\\'>✓ ${x.nm}</div>';"><strong>${x.nm}</strong> <small>(${x.cg})</small></div>`; }); r.innerHTML = h || '<small>Nenhum.</small>'; } catch (e) { } }, 300);
+async function doSend() { const tipo = document.getElementById('smT')?.value || 'ind'; const as = document.getElementById('smAS')?.value?.trim(); const mg = document.getElementById('smMG')?.value?.trim(); if (!as || !mg) { showToast('Preencha tudo!', 'error'); return; } const base = { remetenteId: STATE.userProfile.id, remetenteNome: STATE.userProfile.name, assunto: as, mensagem: mg, lida: false, createdAt: firebase.firestore.FieldValue.serverTimestamp() }; showLoading(); try { if (tipo === 'ind') { const di = document.getElementById('smDI')?.value, dn = document.getElementById('smDN')?.value; if (!di) { showToast('Selecione destinatário!', 'error'); hideLoading(); return; } await schoolRef().collection('mensagens').add({ ...base, destinatarioId: di, destinatarioNome: dn }); showToast(`Enviada para ${dn}!`, 'success'); } else if (tipo === 'cargo') { const cg = document.getElementById('smCS')?.value; const us = await db.collection('users').where('schoolId', '==', STATE.currentSchool.id).get(); let c = 0; for (const u of us.docs) { if (u.data().role === cg) { await schoolRef().collection('mensagens').add({ ...base, destinatarioId: u.id, destinatarioNome: u.data().name || '' }); c++; } } showToast(`Enviada a ${c} pessoa(s)!`, 'success'); } else { const us = await db.collection('users').where('schoolId', '==', STATE.currentSchool.id).get(); let c = 0; for (const u of us.docs) { if (u.id === STATE.userProfile.id) continue; await schoolRef().collection('mensagens').add({ ...base, destinatarioId: u.id, destinatarioNome: u.data().name || '' }); c++; } showToast(`Enviada a ${c}!`, 'success'); } closeModal('smModal'); await loadMsgTab('out'); } catch (e) { showToast(e.message, 'error'); } hideLoading(); }
 
-// ========================================
-// FIX 26: LOADING OVERLAY - Auto hide safety
-// ========================================
-let loadingTimeout;
-function showLoading() {
-    const el = document.getElementById('loadingOverlay');
-    if (el) el.style.display = 'flex';
+// Presenças
+async function loadPresencasAlunos() { const c = document.getElementById('presencasContainer'); const dt = document.getElementById('presData')?.value, tid = document.getElementById('presTurma')?.value; if (!dt || !tid) { c.innerHTML = '<div class="empty-state"><h3>Selecione filtros</h3></div>'; document.getElementById('presFooter').style.display = 'none'; return; } c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>'; try { const allA = await FS_year('alunos'); const alunos = allA.filter(a => a.turmaId === tid && a.estado === 'Ativo').sort((a, b) => (a.name || '').localeCompare(b.name || '')); const allP = await FS_year('presencas'); const pMap = {}; allP.filter(p => p.turmaId === tid && p.data === dt).forEach(p => { pMap[p.alunoId] = { docId: p.id, ...p }; }); STATE.cache.presencasContext = { data: dt, classeId: document.getElementById('presClasse')?.value, turmaId: tid, alunos, presMap: pMap }; document.getElementById('presencaTitle').textContent = `Presenças - ${dt}`; renderPresencasGrid(alunos, pMap); document.getElementById('presFooter').style.display = 'flex'; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
 
-    // Safety: hide after 30 seconds max
-    clearTimeout(loadingTimeout);
-    loadingTimeout = setTimeout(() => {
-        hideLoading();
-        showToast('Operação demorou muito. Verifique a conexão.', 'warning');
-    }, 30000);
-}
+// Boletins
+async function generateBoletins() { const c = document.getElementById('boletinsContainer'); const yid = document.getElementById('boletimAno')?.value, cid = document.getElementById('boletimClasse')?.value, tid = document.getElementById('boletimTurma')?.value, trim = document.getElementById('boletimTrimestre')?.value; if (!yid || !cid) { showToast('Selecione ano e classe!', 'error'); return; } const co = document.getElementById('boletimClasse').selectedOptions[0]; const cn = co?.dataset?.nome || '', nm = parseInt(co?.dataset?.notamax) || 20, nmin = nm === 10 ? 5 : 10, curso = co?.dataset?.curso || ''; c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>'; try { const sid = STATE.currentSchool.id; let alunos = await FS_getAll(FS_ypC(sid, yid, 'alunos')); alunos = alunos.filter(a => a.classeId === cid); if (tid) alunos = alunos.filter(a => a.turmaId === tid); alunos.sort((a, b) => (a.name || '').localeCompare(b.name || '')); let discs = await FS_getAll(FS_ypC(sid, yid, 'disciplinas')); discs = discs.filter(d => d.classeId === cid).sort((a, b) => (a.ordem || 0) - (b.ordem || 0)); const allN = await FS_getAll(FS_ypC(sid, yid, 'notas')); const nMap = {}; allN.forEach(n => { nMap[`${n.alunoId}_${n.disciplinaId}`] = n; }); const yDoc = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yid).get(); const yd = yDoc.data(); STATE.cache.boletinsData = { alunos, discs, notasMap: nMap, classeNome: cn, curso, trimestre: trim, notaMax: nm, notaMin: nmin, yearData: yd }; if (!alunos.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhum aluno</h3></div>'; return; } let h = '<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;">'; alunos.forEach(a => { h += buildBoletimCard(a, discs, nMap, cn, curso, trim, nm, nmin, yd); }); h += '</div>'; c.innerHTML = h; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+function buildBoletimCard(a, discs, nMap, cn, curso, trim, nm, nmin, yd) { let rows = ''; discs.forEach(d => { const n = nMap[`${a.id}_${d.id}`] || {}; const mac = n[`mac${trim}`] ?? '', npt = n[`npt${trim}`] ?? '', mt = n[`mt${trim}`] ?? calcMT(mac, npt); const neg = mt !== '' && parseFloat(mt) < nmin; rows += `<tr><td style="border:1px solid #ccc;padding:2px 4px;font-size:9px;">${d.nome}</td><td style="border:1px solid #ccc;padding:2px;text-align:center;font-size:9px;">${mac}</td><td style="border:1px solid #ccc;padding:2px;text-align:center;font-size:9px;">${npt}</td><td style="border:1px solid #ccc;padding:2px;text-align:center;font-size:9px;${neg ? 'color:#dc2626;' : 'color:#059669;'}font-weight:700;">${mt}</td></tr>`; }); const dir = getDirectorInfo(); return `<div class="card" style="font-size:10px;"><div class="card-body" style="padding:10px;"><div style="text-align:center;margin-bottom:6px;">${getInsigniaHTML(30)}<div style="font-size:7px;text-transform:uppercase;margin-top:2px;">República de Angola</div><div style="font-size:7px;">Ministério da Educação</div><div style="font-size:8px;font-weight:700;margin-top:2px;">${STATE.currentSchool?.name || ''}</div><div style="font-size:9px;font-weight:700;margin-top:4px;border-bottom:1px solid #000;display:inline-block;">BOLETIM - ${trim}º Trimestre</div></div><div style="font-size:8px;margin:4px 0;"><strong>Aluno:</strong> <span style="color:#ce1126;font-weight:700;">${a.name}</span><br><strong>Classe:</strong> ${cn} | <strong>Turma:</strong> ${a.turmaNome || ''} | <strong>Ano:</strong> ${yd?.ano || ''}${curso ? ' | <strong>Curso:</strong> ' + curso : ''}</div><table style="width:100%;border-collapse:collapse;"><thead><tr style="background:#f1f5f9;"><th style="border:1px solid #999;padding:2px;text-align:left;font-size:8px;">Disciplina</th><th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;width:28px;">MAC</th><th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;width:28px;">NPT</th><th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;width:28px;">MT</th></tr></thead><tbody>${rows}</tbody></table><div style="margin-top:8px;text-align:center;">${signatureBlock('Director', dir.name, dir.genero)}</div></div></div>`; }
 
-function hideLoading() {
-    const el = document.getElementById('loadingOverlay');
-    if (el) el.style.display = 'none';
-    clearTimeout(loadingTimeout);
-}
+// Passes
+function buildPasseCard(item, tipo, yearData) { const sch = STATE.currentSchool; const isA = tipo === 'aluno'; const dir = getDirectorInfo(); return `<div class="card" style="font-size:9px;border:2px solid var(--angola-red);"><div class="card-body" style="padding:10px;"><div style="text-align:center;margin-bottom:6px;">${getInsigniaHTML(28)}<div style="font-size:7px;text-transform:uppercase;margin-top:2px;">República de Angola</div><div style="font-size:8px;font-weight:700;color:var(--angola-red);">${(sch?.name || '').substring(0, 35)}</div><div style="font-size:10px;font-weight:800;margin-top:3px;padding:2px 8px;background:var(--angola-red);color:white;display:inline-block;border-radius:4px;">${isA ? 'PASSE ESCOLAR' : 'PASSE FUNCIONAL'}</div></div><div style="display:flex;gap:8px;margin-top:6px;"><div style="flex-shrink:0;">${item.photo ? `<img src="${item.photo}" style="width:50px;height:60px;object-fit:cover;border-radius:4px;border:1px solid #d1d5db;">` : '<div style="width:50px;height:60px;background:#e5e7eb;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:18px;">👤</div>'}</div><div style="flex:1;font-size:8px;"><div style="font-weight:700;color:#ce1126;font-size:10px;margin-bottom:3px;">${(item.name || '').substring(0, 28)}</div>${isA ? `<div><strong>Classe:</strong> ${item.classeNome || ''}</div><div><strong>Turma:</strong> ${item.turmaNome || ''}</div><div><strong>Mat.:</strong> ${item.matricula || ''}</div><div><strong>Ano:</strong> ${yearData?.ano || ''}</div>` : `<div><strong>Cargo:</strong> ${item.cargo || ''}</div><div><strong>Área:</strong> ${item.area || ''}</div><div><strong>BI:</strong> ${item.bi || '-'}</div>`}</div></div><div style="text-align:center;margin-top:8px;border-top:1px solid #d1d5db;padding-top:4px;"><div style="font-size:7px;">Válido: ${yearData?.ano || new Date().getFullYear()}</div><div style="margin-top:6px;font-size:7px;">${genderTitle(dir.genero, 'Director')}</div><div style="border-top:1px solid #000;width:70%;margin:15px auto 2px;"></div><div style="font-size:8px;font-weight:700;">${dir.name}</div></div></div></div>`; }
+async function generatePassesAlunos() { const c = document.getElementById('passesAlunosContainer'); const yid = document.getElementById('passeAno')?.value; if (!yid) { showToast('Selecione ano', 'error'); return; } const cid = document.getElementById('passeClasse')?.value, tid = document.getElementById('passeTurma')?.value; c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>'; try { const sid = STATE.currentSchool.id; let al = await FS_getAll(FS_ypC(sid, yid, 'alunos')); al = al.filter(a => a.estado === 'Ativo'); if (cid) al = al.filter(a => a.classeId === cid); if (tid) al = al.filter(a => a.turmaId === tid); al.sort((a, b) => (a.name || '').localeCompare(b.name || '')); const yDoc = await db.collection('schools').doc(sid).collection('anos_letivos').doc(yid).get(); const yd = yDoc.data(); STATE.cache.passesData = { type: 'alunos', items: al, yearData: yd }; if (!al.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhum aluno</h3></div>'; return; } let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">'; al.forEach(a => { h += buildPasseCard(a, 'aluno', yd); }); h += '</div>'; c.innerHTML = h; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
+async function generatePassesFuncionarios() { const c = document.getElementById('passesFuncContainer'); const cargo = document.getElementById('passeFuncCargo')?.value; c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>'; try { const profs = await FS_school('professores'); const funcs = await FS_school('funcionarios'); let items = []; profs.filter(p => p.ativo !== false).forEach(p => items.push({ ...p, cargo: 'Professor', tipo: 'professor' })); funcs.filter(f => f.ativo !== false).forEach(f => items.push({ ...f, tipo: 'funcionario' })); if (cargo) { if (cargo === 'Professor') items = items.filter(i => i.tipo === 'professor'); else items = items.filter(i => (i.cargo || '').includes(cargo)); } STATE.cache.passesData = { type: 'funcionarios', items, yearData: STATE.currentYear }; if (!items.length) { c.innerHTML = '<div class="empty-state"><h3>Nenhum</h3></div>'; return; } let h = '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:12px;">'; items.forEach(f => { h += buildPasseCard(f, 'funcionario', STATE.currentYear); }); h += '</div>'; c.innerHTML = h; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
 
-// ========================================
-// FIX 27: AUTH STATE - Melhor tratamento
-// ========================================
-auth.onAuthStateChanged(async (user) => {
-    if (user) {
-        STATE.currentUser = user;
-        await loadUserProfile(user.uid);
-    } else {
-        STATE.currentUser = null;
-        STATE.userProfile = null;
-        STATE.currentSchool = null;
-        STATE.currentYearId = null;
-        STATE.currentYear = null;
-        STATE.cache = {};
-        hideLoading();
-        await checkSetupRequired();
-    }
-});
+// Pautas
+async function loadPautaView() { const c = document.getElementById('pautaViewContainer'); const cid = document.getElementById('pautaClasse')?.value, tid = document.getElementById('pautaTurma')?.value; const tipo = document.getElementById('pautaTipo')?.value, trim = document.getElementById('pautaTrimestre')?.value; if (tipo === 'anual') document.getElementById('pautaTrimGroup').style.display = 'none'; else document.getElementById('pautaTrimGroup').style.display = 'block'; if (!cid || !tid) { c.innerHTML = '<div class="empty-state"><h3>Selecione classe e turma</h3></div>'; return; } const co = document.getElementById('pautaClasse').selectedOptions[0]; const cn = co?.dataset?.nome || '', tn = document.getElementById('pautaTurma').selectedOptions[0]?.dataset?.nome || ''; const nm = parseInt(co?.dataset?.notamax) || 20, nmin = nm === 10 ? 5 : 10; const isT = ['6ª Classe', '9ª Classe', '12ª Classe', '13ª Classe'].includes(cn); c.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>'; try { let alunos = (await FS_year('alunos')).filter(a => a.turmaId === tid).sort((a, b) => (a.name || '').localeCompare(b.name || '')); let discs = (await FS_year('disciplinas')).filter(d => d.classeId === cid).sort((a, b) => (a.ordem || 0) - (b.ordem || 0)); const allN = await FS_year('notas'); const nMap = {}; allN.filter(n => n.turmaId === tid).forEach(n => { nMap[`${n.alunoId}_${n.disciplinaId}`] = n; }); const dir = getDirectorInfo(); const sub = await getSubdirectorPedInfo(); let h = `<div id="pautaPrintArea" style="font-family:'Inter',sans-serif;font-size:11px;"><div style="text-align:center;margin-bottom:16px;">${getInsigniaHTML(60)}<h4 style="margin-top:8px;text-transform:uppercase;">REPÚBLICA DE ANGOLA</h4><h5>MINISTÉRIO DA EDUCAÇÃO</h5><p style="font-weight:600;margin-top:6px;">${STATE.currentSchool?.name || ''}</p><h3 style="margin-top:10px;text-transform:uppercase;border-bottom:2px solid #000;display:inline-block;padding-bottom:4px;">PAUTA ${tipo === 'anual' ? 'ANUAL' : 'DO ' + trim + 'º TRIMESTRE'}</h3><div style="margin-top:8px;font-size:12px;"><strong>Classe:</strong> ${cn} | <strong>Turma:</strong> ${tn} | <strong>Ano:</strong> ${STATE.currentYear?.ano || ''}${co?.dataset?.curso ? ' | <strong>Curso:</strong> ' + co.dataset.curso : ''}</div></div>`; h += '<table style="width:100%;border-collapse:collapse;font-size:10px;"><thead><tr style="background:#f1f5f9;"><th style="border:1px solid #999;padding:4px;">#</th><th style="border:1px solid #999;padding:4px;text-align:left;">Nome</th>'; discs.forEach(d => { h += `<th style="border:1px solid #999;padding:2px;text-align:center;font-size:8px;" title="${d.nome}">${d.abreviatura || d.nome.substring(0, 5)}</th>`; }); h += '<th style="border:1px solid #999;padding:4px;">Resultado</th></tr></thead><tbody>'; alunos.forEach((a, i) => { const act = a.estado === 'Ativo'; h += `<tr style="${!act ? 'opacity:0.5;' : ''}"><td style="border:1px solid #ccc;padding:3px;text-align:center;">${i + 1}</td><td style="border:1px solid #ccc;padding:3px;color:#ce1126;font-weight:600;">${a.name}</td>`; let ap = true, ha = true, nc = 0, ns = []; discs.forEach(d => { const k = `${a.id}_${d.id}`, n = nMap[k]; let v; if (tipo === 'trimestral') { if (trim === '3') v = isT ? n?.mediaFinal : n?.mt3 ?? n?.mediaFinal; else v = n?.[`mt${trim}`]; } else v = n?.mediaFinal; const ds = v != null ? v : '', neg = ds !== '' && parseFloat(ds) < nmin; if (neg) { ap = false; nc++; ns.push(d.nome); } if (ds === '' || ds === null) ha = false; h += `<td style="border:1px solid #ccc;padding:3px;text-align:center;${neg ? 'color:#dc2626;font-weight:700;' : 'color:#059669;'}">${ds}</td>`; }); let obs = ''; if (!act) obs = a.estado === 'Transferido' ? genderWord(a.genero, 'Transferido', 'Transferida') : 'Desistente'; else if (!ha) obs = ''; else obs = checkApprovalRules(cn, ap, nc, ns, a.genero, nmin); const oc = obs.includes('Aprov') ? 'color:#059669;' : obs.includes('Reprov') ? 'color:#dc2626;' : 'color:#6b7280;'; h += `<td style="border:1px solid #ccc;padding:3px;text-align:center;font-weight:600;font-size:9px;${oc}">${obs}</td></tr>`; }); h += '</tbody></table>'; h += `<div style="margin-top:30px;display:flex;justify-content:space-between;">${signatureBlock('Director', dir.name, dir.genero)}${signatureBlock('Subdiretor Pedagógico', sub.name, sub.genero)}<div style="text-align:center;min-width:180px;"><div style="font-size:11px;">O(A) Secretário(a)</div><div style="border-top:1px solid #000;width:80%;margin:25px auto 4px;"></div></div></div></div>`; c.innerHTML = h; STATE.cache.pautaContext = { classeId: cid, turmaId: tid, classeNome: cn, turmaNome: tn, tipo, trimestre: trim, alunos, discs, notasMap: nMap, notaMax: nm, notaMin: nmin, isTerminal: isT }; } catch (e) { c.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }
 
-// ========================================
-// FIX 28: FORMATCURRENCY - Melhorado
-// ========================================
-function formatCurrency(value) {
-    const num = parseFloat(value) || 0;
-    return num.toLocaleString('pt-AO', {
-        minimumFractionDigits: 2,
-        maximumFractionDigits: 2
-    }) + ' Kz';
-}
+// Pesquisas nos documentos
+const searchDeclAluno = debounce(async function () { const s = (document.getElementById('declSearch')?.value || '').toLowerCase(); const r = document.getElementById('declSearchResults'); if (!r || s.length < 2) { if (r) r.innerHTML = ''; return; } const yid = document.getElementById('declAno')?.value; const cid = document.getElementById('declClasse')?.value; if (!yid) { r.innerHTML = '<p>Selecione ano.</p>'; return; } try { const allA = await FS_getAll(FS_ypC(STATE.currentSchool.id, yid, 'alunos')); let found = allA.filter(a => (a.name || '').toLowerCase().includes(s)); if (cid) found = found.filter(a => a.classeId === cid); let h = ''; found.slice(0, 10).forEach(a => { h += `<div style="padding:8px;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:4px;cursor:pointer;" onclick="generateDeclaracao('${a.id}','${yid}')"><span class="student-name">${a.name}</span><small style="color:var(--gray-500);margin-left:8px;">${a.classeNome || ''}</small></div>`; }); r.innerHTML = h || '<p style="color:var(--gray-500);">Nenhum.</p>'; } catch (e) { r.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }, 300);
 
-// ========================================
-// FIX 29: ESCAPE HTML para prevenir XSS
-// ========================================
-function escapeHTML(str) {
-    if (!str) return '';
-    return String(str)
-        .replace(/&/g, '&amp;')
-        .replace(/</g, '&lt;')
-        .replace(/>/g, '&gt;')
-        .replace(/"/g, '&quot;')
-        .replace(/'/g, '&#39;');
-}
+const searchCertAluno = debounce(async function () { const s = (document.getElementById('certSearch')?.value || '').toLowerCase(); const r = document.getElementById('certSearchResults'); if (!r || s.length < 2) { if (r) r.innerHTML = ''; return; } const yid = document.getElementById('certAno')?.value; const cid = document.getElementById('certClasse')?.value; if (!yid) { r.innerHTML = '<p>Selecione ano.</p>'; return; } try { const allA = await FS_getAll(FS_ypC(STATE.currentSchool.id, yid, 'alunos')); let found = allA.filter(a => (a.name || '').toLowerCase().includes(s)); if (cid) found = found.filter(a => a.classeId === cid); let h = ''; found.slice(0, 10).forEach(a => { h += `<div style="padding:8px;border:1px solid var(--gray-200);border-radius:8px;margin-bottom:4px;cursor:pointer;" onclick="generateCertificado('${a.id}','${yid}')"><span class="student-name">${a.name}</span><small style="color:var(--gray-500);margin-left:8px;">${a.classeNome || ''}</small></div>`; }); r.innerHTML = h || '<p style="color:var(--gray-500);">Nenhum.</p>'; } catch (e) { r.innerHTML = `<p style="color:var(--danger);">${e.message}</p>`; } }, 300);
 
-// ========================================
-// FIX 30: MOBILE SIDEBAR AUTO-CLOSE
-// ========================================
-document.addEventListener('click', (e) => {
-    const sidebar = document.getElementById('sidebar');
-    if (!sidebar) return;
+// CSS responsivo
+const css = document.createElement('style'); css.textContent = `@media(max-width:768px){.form-row,.form-row-3{grid-template-columns:1fr!important;}.stats-grid{grid-template-columns:1fr 1fr;gap:8px;}.nota-input{width:40px!important;font-size:11px!important;}table{font-size:11px;}table th,table td{padding:5px 6px;}}@media(max-width:480px){.stats-grid{grid-template-columns:1fr;}.page-content{padding:8px;}}.table-container{overflow-x:auto;-webkit-overflow-scrolling:touch;}@media print{.sidebar,.header,.page-header,.page-actions,.filter-bar,.tabs,.modal-footer,.btn,.consultation-fab{display:none!important;}.main-content{margin-left:0!important;}.page-content{padding:0!important;}.card{box-shadow:none!important;border:none!important;}}`; document.head.appendChild(css);
 
-    if (window.innerWidth <= 768 && sidebar.classList.contains('mobile-open')) {
-        if (!sidebar.contains(e.target) && !e.target.closest('.toggle-btn')) {
-            sidebar.classList.remove('mobile-open');
-        }
-    }
-
-    // Close user dropdown
-    if (!e.target.closest('.dropdown')) {
-        const dropdown = document.getElementById('userDropdown');
-        if (dropdown) dropdown.classList.remove('show');
-    }
-});
-
-// ========================================
-// SISTEMA PRONTO
-// ========================================
-console.log('');
-console.log('%c✅ Script de correções carregado com sucesso!', 'color: #059669; font-size: 14px; font-weight: bold;');
-console.log('%c📋 30 correções aplicadas:', 'color: #3b82f6;');
-console.log('  1. Compressão de imagens até 15MB');
-console.log('  2. Compressão de insígnia');
-console.log('  3. Setup admin com foto');
-console.log('  4-7. Handlers de foto (aluno/func/prof/perfil)');
-console.log('  8. Preview insígnia');
-console.log('  9-11. Save com tratamento de erros');
-console.log('  12. Director save robusto');
-console.log('  13. Timestamp serialization');
-console.log('  14. Recuperação de senha');
-console.log('  15. Login melhorado');
-console.log('  16. Sincronização em tempo real');
-console.log('  17. Layout/CSS fixes');
-console.log('  18. System config');
-console.log('  19. Número por extenso');
-console.log('  20. Year selector');
-console.log('  21. Secondary app cleanup');
-console.log('  22. Matrícula robusta');
-console.log('  23. Query error handling');
-console.log('  24. Double-click prevention');
-console.log('  25. Toast improvements');
-console.log('  26. Loading safety');
-console.log('  27. Auth state');
-console.log('  28. Currency format');
-console.log('  29. XSS prevention');
-console.log('  30. Mobile fixes');
-console.log('');
+console.log('%c✅ CORREÇÃO V5 APLICADA!', 'color:#059669;font-size:16px;font-weight:bold;');
+console.log('  ✓ Declarações com insígnia + gênero + Sub.Pedagógico + Director');
+console.log('  ✓ Certificados com "Conferido por:" alinhado à esquerda');
+console.log('  ✓ Gênero distinguido em todos documentos');
+console.log('  ✓ Assinaturas: cargo → traço → nome');
+console.log('  ✓ MFD = CT3×60% + Exame×40% para classes finais');
+console.log('  ✓ Devedores visíveis nos pagamentos');
+console.log('  ✓ Pagamentos adicionados às receitas automaticamente');
+console.log('  ✓ ZERO erros de index Firestore');
 </script>
 </body>
 </html>
