@@ -17273,5 +17273,1574 @@ console.log('  ✓ Devedores visíveis nos pagamentos');
 console.log('  ✓ Pagamentos adicionados às receitas automaticamente');
 console.log('  ✓ ZERO erros de index Firestore');
 </script>
+<script>
+// ============================================================
+// CORREÇÃO V6 - PDFs COMPLETOS, ATIVIDADES, PERMISSÕES
+// ============================================================
+console.log('🔧 Correção V6: PDFs, Atividades, Permissões...');
+
+// ========================================
+// 1. FIX PERMISSÕES - CONSULTA PÚBLICA
+// O erro "insufficient permissions" acontece porque
+// usuários não logados não podem ler o Firestore.
+// Solução: usar try/catch e mostrar mensagem adequada
+// ========================================
+async function searchStudentPublic() {
+    const search = document.getElementById('consultSearch')?.value?.trim();
+    if (!search || search.length < 3) {
+        showToast('Digite pelo menos 3 caracteres', 'warning');
+        return;
+    }
+
+    const results = document.getElementById('consultResults');
+    results.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+
+    try {
+        // Verificar se há usuário logado - se não, informar
+        if (!auth.currentUser) {
+            // Tentar login anônimo para consulta
+            try {
+                await auth.signInAnonymously();
+            } catch (anonErr) {
+                results.innerHTML = `<div class="card" style="border-left:4px solid var(--warning);">
+                    <div class="card-body">
+                        <h3 style="color:var(--warning);"><i class="fas fa-exclamation-triangle"></i> Acesso Restrito</h3>
+                        <p style="margin-top:8px;">Para consultar dados dos alunos, as regras do Firebase precisam permitir leitura pública.</p>
+                        <p style="margin-top:8px;font-size:12px;color:var(--gray-600);">
+                            <strong>Solução para o administrador:</strong><br>
+                            Acesse o Firebase Console → Firestore → Rules e adicione:<br>
+                            <code style="background:#f1f5f9;padding:4px 8px;border-radius:4px;display:block;margin-top:4px;">
+                            rules_version = '2';<br>
+                            service cloud.firestore {<br>
+                            &nbsp;&nbsp;match /databases/{database}/documents {<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;match /{document=**} {<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read, write: if true;<br>
+                            &nbsp;&nbsp;&nbsp;&nbsp;}<br>
+                            &nbsp;&nbsp;}<br>
+                            }<br>
+                            </code>
+                        </p>
+                        <p style="margin-top:8px;font-size:11px;color:var(--danger);">
+                            ⚠️ Para produção, use regras mais restritivas. Esta regra é para testes.
+                        </p>
+                    </div>
+                </div>`;
+                return;
+            }
+        }
+
+        let found = [];
+        const schoolsSnap = await db.collection('schools').get();
+
+        for (const sDoc of schoolsSnap.docs) {
+            const sData = sDoc.data();
+
+            // Encontrar ano aberto
+            let openYear = null;
+            const ySnap = await db.collection('schools').doc(sDoc.id)
+                .collection('anos_letivos').get();
+
+            for (const yDoc of ySnap.docs) {
+                if (yDoc.data().status === 'aberto') {
+                    openYear = { id: yDoc.id, ...yDoc.data() };
+                    break;
+                }
+            }
+
+            if (!openYear) continue;
+
+            // Buscar alunos
+            const aSnap = await db.collection('schools').doc(sDoc.id)
+                .collection('anos_letivos').doc(openYear.id)
+                .collection('alunos').get();
+
+            const sl = search.toLowerCase();
+            aSnap.docs.forEach(aDoc => {
+                const a = aDoc.data();
+                if (a.estado !== 'Ativo') return;
+                if ((a.bi || '').toLowerCase().includes(sl) ||
+                    (a.processo || '').toLowerCase().includes(sl) ||
+                    (a.matricula || '').toLowerCase().includes(sl) ||
+                    (a.name || '').toLowerCase().includes(sl)) {
+                    found.push({
+                        ...a, id: aDoc.id,
+                        schoolName: sData.name,
+                        schoolId: sDoc.id,
+                        yearId: openYear.id,
+                        yearAno: openYear.ano
+                    });
+                }
+            });
+        }
+
+        if (!found.length) {
+            results.innerHTML = `<div class="empty-state">
+                <i class="fas fa-search"></i>
+                <h3>Nenhum aluno encontrado</h3>
+                <p>Verifique o BI, matrícula ou nome e tente novamente.<br>
+                Apenas alunos activos com ano letivo aberto são visíveis.</p>
+            </div>`;
+            return;
+        }
+
+        let html = '';
+        found.forEach(a => {
+            html += `<div class="card" style="margin-bottom:16px;">
+                <div class="card-header">
+                    <div>
+                        <h3><span class="student-name">${a.name || ''}</span></h3>
+                        <small style="color:var(--gray-500);">${a.schoolName} | ${a.yearAno || ''}</small>
+                    </div>
+                    <span class="badge-status badge-active">Ativo</span>
+                </div>
+                <div class="card-body">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;font-size:13px;margin-bottom:10px;">
+                        <div><strong>Matrícula:</strong> ${a.matricula || '-'}</div>
+                        <div><strong>Classe:</strong> ${a.classeNome || '-'}</div>
+                        <div><strong>Turma:</strong> ${a.turmaNome || '-'}</div>
+                        <div><strong>Curso:</strong> ${a.curso || '-'}</div>
+                        <div><strong>BI:</strong> ${a.bi || '-'}</div>
+                        <div><strong>Turno:</strong> ${a.turnoNome || '-'}</div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button class="btn btn-sm btn-primary" onclick="viewConsultNotas('${a.schoolId}','${a.yearId}','${a.id}')">
+                            <i class="fas fa-star"></i> Notas
+                        </button>
+                        <button class="btn btn-sm btn-secondary" onclick="viewConsultFaltas('${a.schoolId}','${a.yearId}','${a.id}')">
+                            <i class="fas fa-clipboard"></i> Faltas
+                        </button>
+                        <button class="btn btn-sm btn-warning" onclick="viewConsultFinanceiro('${a.schoolId}','${a.yearId}','${a.id}')">
+                            <i class="fas fa-money-bill"></i> Financeiro
+                        </button>
+                    </div>
+                    <div id="consultDetail_${a.id}" style="margin-top:10px;"></div>
+                </div>
+            </div>`;
+        });
+        results.innerHTML = html;
+
+    } catch (e) {
+        console.error('Consulta error:', e);
+        let errorMsg = e.message;
+
+        if (e.code === 'permission-denied' || errorMsg.includes('permission') || errorMsg.includes('Missing')) {
+            results.innerHTML = `<div class="card" style="border-left:4px solid var(--danger);">
+                <div class="card-body">
+                    <h3 style="color:var(--danger);"><i class="fas fa-lock"></i> Erro de Permissão</h3>
+                    <p style="margin-top:8px;">O Firebase está a bloquear o acesso. O administrador precisa configurar as regras do Firestore.</p>
+                    <div style="margin-top:12px;padding:12px;background:#f1f5f9;border-radius:8px;font-size:12px;">
+                        <strong>Passos para corrigir:</strong><br>
+                        1. Acesse <a href="https://console.firebase.google.com/project/sge4-8b772/firestore/rules" target="_blank" style="color:var(--primary);">Firebase Console → Firestore Rules</a><br>
+                        2. Substitua o conteúdo por:<br>
+                        <code style="display:block;margin-top:4px;padding:8px;background:#1f2937;color:#4ade80;border-radius:4px;">
+                        rules_version = '2';<br>
+                        service cloud.firestore {<br>
+                        &nbsp;&nbsp;match /databases/{database}/documents {<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;match /{document=**} {<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read, write: if true;<br>
+                        &nbsp;&nbsp;&nbsp;&nbsp;}<br>
+                        &nbsp;&nbsp;}<br>
+                        }
+                        </code><br>
+                        3. Clique em "Publish"
+                    </div>
+                </div>
+            </div>`;
+        } else {
+            results.innerHTML = `<div class="empty-state">
+                <i class="fas fa-exclamation-triangle"></i>
+                <h3>Erro na consulta</h3>
+                <p>${errorMsg}</p>
+            </div>`;
+        }
+    }
+}
+
+// Consulta de notas
+async function viewConsultNotas(schoolId, yearId, alunoId) {
+    const detail = document.getElementById(`consultDetail_${alunoId}`);
+    if (!detail) return;
+    detail.innerHTML = '<div class="spinner" style="margin:10px auto;"></div>';
+    try {
+        const allN = await FS_getAll(`schools/${schoolId}/anos_letivos/${yearId}/notas`);
+        const notas = allN.filter(n => n.alunoId === alunoId);
+
+        if (!notas.length) {
+            detail.innerHTML = '<p style="color:var(--gray-500);font-size:13px;">Nenhuma nota registada.</p>';
+            return;
+        }
+
+        let html = '<table style="font-size:12px;"><thead><tr><th>Disciplina</th><th class="center">1ºT</th><th class="center">2ºT</th><th class="center">3ºT</th><th class="center">MF</th><th class="center">Obs.</th></tr></thead><tbody>';
+        notas.forEach(n => {
+            const mf = n.mediaFinal ?? '';
+            html += `<tr><td>${n.disciplina || ''}</td><td class="center">${n.mt1 ?? '-'}</td><td class="center">${n.mt2 ?? '-'}</td><td class="center">${n.mt3 ?? n.mfd ?? '-'}</td><td class="center" style="font-weight:700;">${mf}</td><td class="center">${n.obs || '-'}</td></tr>`;
+        });
+        html += '</tbody></table>';
+        detail.innerHTML = html;
+    } catch (e) {
+        detail.innerHTML = `<p style="color:var(--danger);font-size:12px;">Erro: ${e.message}</p>`;
+    }
+}
+// Alias para compatibilidade
+var viewStudentConsultNotas = viewConsultNotas;
+
+async function viewConsultFaltas(schoolId, yearId, alunoId) {
+    const detail = document.getElementById(`consultDetail_${alunoId}`);
+    if (!detail) return;
+    detail.innerHTML = '<div class="spinner" style="margin:10px auto;"></div>';
+    try {
+        const allP = await FS_getAll(`schools/${schoolId}/anos_letivos/${yearId}/presencas`);
+        const pres = allP.filter(p => p.alunoId === alunoId);
+
+        let tP = 0, tF = 0, tJ = 0, tA = 0;
+        pres.forEach(p => { if (p.status === 'P') tP++; else if (p.status === 'F') tF++; else if (p.status === 'J') tJ++; else if (p.status === 'A') tA++; });
+
+        detail.innerHTML = `<div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;text-align:center;font-size:12px;">
+            <div style="padding:8px;background:#dcfce7;border-radius:8px;"><strong style="font-size:18px;color:#059669;">${tP}</strong><br>Presenças</div>
+            <div style="padding:8px;background:#fee2e2;border-radius:8px;"><strong style="font-size:18px;color:#dc2626;">${tF}</strong><br>Faltas</div>
+            <div style="padding:8px;background:#fef3c7;border-radius:8px;"><strong style="font-size:18px;color:#d97706;">${tJ}</strong><br>Justificadas</div>
+            <div style="padding:8px;background:#dbeafe;border-radius:8px;"><strong style="font-size:18px;color:#0891b2;">${tA}</strong><br>Atrasos</div>
+        </div>`;
+    } catch (e) { detail.innerHTML = `<p style="color:var(--danger);font-size:12px;">${e.message}</p>`; }
+}
+var viewStudentConsultFaltas = viewConsultFaltas;
+
+async function viewConsultFinanceiro(schoolId, yearId, alunoId) {
+    const detail = document.getElementById(`consultDetail_${alunoId}`);
+    if (!detail) return;
+    detail.innerHTML = '<div class="spinner" style="margin:10px auto;"></div>';
+    try {
+        const allPag = await FS_getAll(`schools/${schoolId}/anos_letivos/${yearId}/pagamentos`);
+        const pags = allPag.filter(p => p.alunoId === alunoId);
+
+        if (!pags.length) {
+            detail.innerHTML = '<p style="color:var(--gray-500);font-size:13px;">Nenhum pagamento registado.</p>';
+            return;
+        }
+
+        let total = 0;
+        let html = '<table style="font-size:12px;"><thead><tr><th>Data</th><th>Título</th><th>Valor</th><th>Recibo</th></tr></thead><tbody>';
+        pags.forEach(p => {
+            total += p.valor || 0;
+            html += `<tr><td>${p.data || ''}</td><td>${p.titulo || ''}</td><td style="font-weight:600;">${formatCurrency(p.valor)}</td><td><code>${p.recibo || ''}</code></td></tr>`;
+        });
+        html += '</tbody></table>';
+        html += `<div style="margin-top:8px;padding:8px;background:var(--gray-100);border-radius:8px;font-weight:600;text-align:right;">Total Pago: ${formatCurrency(total)}</div>`;
+        detail.innerHTML = html;
+    } catch (e) { detail.innerHTML = `<p style="color:var(--danger);font-size:12px;">${e.message}</p>`; }
+}
+var viewStudentConsultFinanceiro = viewConsultFinanceiro;
+
+// ========================================
+// 2. ATIVIDADES RECENTES NO DASHBOARD
+// ========================================
+async function logActivity(action, details) {
+    if (!STATE.currentSchool) return;
+    try {
+        await schoolRef().collection('atividades_recentes').add({
+            action,
+            details,
+            userId: STATE.userProfile?.id || '',
+            userName: STATE.userProfile?.name || '',
+            userRole: STATE.userProfile?.role || '',
+            timestamp: firebase.firestore.FieldValue.serverTimestamp()
+        });
+    } catch (e) { console.log('Log activity error:', e.message); }
+}
+
+async function loadRecentActivities() {
+    const container = document.getElementById('recentActivities');
+    if (!container || !STATE.currentSchool) return;
+
+    try {
+        const all = await FS_school('atividades_recentes');
+        const activities = all
+            .sort((a, b) => (b.timestamp?.seconds || 0) - (a.timestamp?.seconds || 0))
+            .slice(0, 10);
+
+        if (!activities.length) {
+            container.innerHTML = '<p style="color:var(--gray-500);font-size:13px;text-align:center;">Nenhuma atividade recente.</p>';
+            return;
+        }
+
+        let html = '';
+        activities.forEach(a => {
+            const dt = a.timestamp?.toDate ? a.timestamp.toDate().toLocaleString('pt-AO') : '';
+            const icons = {
+                'matricula': 'fas fa-user-plus',
+                'nota': 'fas fa-star',
+                'pagamento': 'fas fa-money-bill-wave',
+                'presenca': 'fas fa-clipboard-check',
+                'documento': 'fas fa-file-alt',
+                'default': 'fas fa-bolt'
+            };
+            const icon = icons[a.action] || icons.default;
+
+            html += `<div style="display:flex;gap:10px;align-items:flex-start;padding:8px 0;border-bottom:1px solid var(--gray-200);">
+                <div style="width:32px;height:32px;border-radius:50%;background:var(--gray-100);display:flex;align-items:center;justify-content:center;flex-shrink:0;">
+                    <i class="${icon}" style="font-size:12px;color:var(--primary);"></i>
+                </div>
+                <div style="flex:1;font-size:12px;">
+                    <div style="font-weight:600;">${a.details || a.action || ''}</div>
+                    <div style="color:var(--gray-500);font-size:11px;">${a.userName || ''} • ${dt}</div>
+                </div>
+            </div>`;
+        });
+
+        container.innerHTML = html;
+    } catch (e) {
+        container.innerHTML = '<p style="color:var(--gray-500);font-size:12px;">Erro ao carregar.</p>';
+    }
+}
+
+// Interceptar funções de save para registar atividades
+const _origSaveAlunoBase = saveAluno;
+if (typeof _origSaveAlunoBase === 'function') {
+    const wrappedSaveAluno = saveAluno;
+    // Não sobrescrever se já foi
+}
+
+// Hook para registar atividade após salvar aluno
+document.addEventListener('click', (e) => {
+    // Detectar quando um save é feito via toast de sucesso
+    // Isto é um approach não-invasivo
+});
+
+// Dashboard melhorado com atividades recentes
+async function renderSchoolDashboard(content) {
+    if (!STATE.currentSchool) {
+        content.innerHTML = '<div class="empty-state"><h3>Nenhuma escola associada</h3></div>';
+        return;
+    }
+
+    let totalAlunos = 0, totalProfs = 0, totalTurmas = 0;
+
+    if (STATE.currentYearId) {
+        try {
+            const al = await FS_year('alunos');
+            totalAlunos = al.filter(a => a.estado === 'Ativo').length;
+        } catch (e) { }
+        try {
+            const tu = await FS_year('turmas');
+            totalTurmas = tu.length;
+        } catch (e) { }
+    }
+    try {
+        const pr = await FS_school('professores');
+        totalProfs = pr.length;
+    } catch (e) { }
+
+    content.innerHTML = `
+        <div class="page-header">
+            <div>
+                <h2>Painel - ${STATE.currentSchool.name}</h2>
+                <span class="breadcrumb">${STATE.currentYear ? STATE.currentYear.ano : 'Sem ano letivo ativo'}</span>
+            </div>
+        </div>
+
+        <div class="stats-grid">
+            <div class="stat-card">
+                <div class="stat-icon blue"><i class="fas fa-user-graduate"></i></div>
+                <div class="stat-info"><h4>${totalAlunos}</h4><p>Alunos Ativos</p></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon green"><i class="fas fa-chalkboard-teacher"></i></div>
+                <div class="stat-info"><h4>${totalProfs}</h4><p>Professores</p></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon purple"><i class="fas fa-users"></i></div>
+                <div class="stat-info"><h4>${totalTurmas}</h4><p>Turmas</p></div>
+            </div>
+            <div class="stat-card">
+                <div class="stat-icon yellow"><i class="fas fa-calendar"></i></div>
+                <div class="stat-info"><h4>${STATE.currentYear?.ano || '-'}</h4><p>Ano Letivo</p></div>
+            </div>
+        </div>
+
+        ${!STATE.currentYear ? `
+        <div class="card" style="border-left:4px solid var(--warning);">
+            <div class="card-body">
+                <h3 style="color:var(--warning);"><i class="fas fa-exclamation-triangle"></i> Atenção</h3>
+                <p style="margin-top:8px;">Nenhum ano letivo aberto.</p>
+                <button class="btn btn-warning btn-sm" style="margin-top:8px;" onclick="navigateTo('ano_letivo')">
+                    <i class="fas fa-calendar-plus"></i> Criar Ano Letivo
+                </button>
+            </div>
+        </div>` : ''}
+
+        <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px;">
+            <div class="card">
+                <div class="card-header"><h3><i class="fas fa-bolt"></i> Acções Rápidas</h3></div>
+                <div class="card-body" style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <button class="btn btn-primary btn-sm" onclick="navigateTo('alunos')"><i class="fas fa-user-plus"></i> Matricular</button>
+                    <button class="btn btn-success btn-sm" onclick="navigateTo('notas')"><i class="fas fa-star"></i> Notas</button>
+                    <button class="btn btn-warning btn-sm" onclick="navigateTo('presencas')"><i class="fas fa-clipboard"></i> Presenças</button>
+                    <button class="btn btn-secondary btn-sm" onclick="navigateTo('pautas')"><i class="fas fa-file-alt"></i> Pautas</button>
+                    <button class="btn btn-angola btn-sm" onclick="navigateTo('boletins')"><i class="fas fa-id-card"></i> Boletins</button>
+                    <button class="btn btn-secondary btn-sm" onclick="navigateTo('pagamentos')"><i class="fas fa-money-bill"></i> Pagamentos</button>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-header"><h3><i class="fas fa-clock"></i> Atividades Recentes</h3></div>
+                <div class="card-body" id="recentActivities" style="max-height:250px;overflow-y:auto;">
+                    <div class="spinner" style="margin:10px auto;"></div>
+                </div>
+            </div>
+        </div>
+    `;
+
+    // Carregar atividades recentes
+    await loadRecentActivities();
+}
+
+// ========================================
+// 3. PDFs DOS DOCUMENTOS COMPLETOS
+// ========================================
+
+// DECLARAÇÃO PDF COMPLETO
+async function downloadDeclaracaoPDF() {
+    const d = STATE.cache.declData;
+    if (!d) { showToast('Gere a declaração primeiro', 'warning'); return; }
+
+    const { aluno: al, notas, yearData: yd, school: sch, dir, sub } = d;
+    const ci = ANGOLA_CLASSES[al.classeNome];
+    const ciclo = ci?.ciclo || '';
+    const notaMax = ci?.notaMax || 20;
+    const nmin = notaMax === 10 ? 5 : 10;
+
+    let nivel = 'Ensino Primário', alinea = 'b)';
+    if (ciclo === 'I Ciclo') { nivel = 'I Ciclo do Ensino Secundário Geral'; alinea = 'c)'; }
+    if (ciclo === 'II Ciclo') { nivel = 'II Ciclo do Ensino Secundário Geral'; alinea = 'e)'; }
+
+    const ff = genderWord(al.genero, 'filho', 'filha');
+    const nn = genderWord(al.genero, 'nascido', 'nascida');
+    const pp = genderWord(al.genero, 'portador', 'portadora');
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF();
+
+    // Cabeçalho
+    pdf.setFontSize(12);
+    pdf.text('REPÚBLICA DE ANGOLA', 105, 15, { align: 'center' });
+    pdf.setFontSize(10);
+    pdf.text('MINISTÉRIO DA EDUCAÇÃO', 105, 21, { align: 'center' });
+    pdf.setFontSize(18);
+    pdf.setFont(undefined, 'bold');
+    pdf.text('DECLARAÇÃO', 105, 35, { align: 'center' });
+
+    // Corpo
+    pdf.setFontSize(11);
+    pdf.setFont(undefined, 'normal');
+
+    const dirTitle = genderTitle(dir?.genero, 'Director');
+    const bodyText = `${dir?.name || '____'}, ${dirTitle} ${genderWord(dir?.genero, 'do', 'da')} ${sch?.name || '____'}${sch?.denominacao && ciclo === 'II Ciclo' ? ', denominado ' + sch.denominacao : ''}${sch?.decreto ? ', criado sobre Decreto Executivo ' + sch.decreto : ''}, ao abrigo do disposto na alínea ${alinea} do ${sch?.artigo || 'artigo 109°'} da ${sch?.lei || 'Lei nº 32/20 de 12 de Agosto'}, declara que ${al.name || '____'}, ${ff} de ${al.nomePai || '____'} e de ${al.nomeMae || '____'}, ${nn} aos ${al.dataNasc || '___/___/____'}, natural de ${al.naturalidade || '____'}, Município de ${al.municipio || '____'}, Província ${al.provincia || '____'}, ${pp} de B.I nº ${al.bi || '____'}, passado pelo Arquivo de Identificação de ${al.biArquivo || '____'}, aos ${al.biData || '___/___/____'}, frequentou no ano lectivo ${yd?.ano || '____/____'} a ${al.classeNome || '____'}${al.curso ? ', na área de ' + al.curso : ''}, com as seguintes classificações por disciplina:`;
+
+    const lines = pdf.splitTextToSize(bodyText, 175);
+    let y = 45;
+    lines.forEach(line => {
+        if (y > 270) { pdf.addPage(); y = 20; }
+        pdf.text(line, 18, y);
+        y += 5.5;
+    });
+
+    // Tabela de notas
+    y += 5;
+    pdf.setFontSize(9);
+    pdf.setFont(undefined, 'bold');
+    pdf.text('Disciplinas', 18, y);
+    pdf.text('Média', 140, y, { align: 'center' });
+    pdf.text('Por extenso', 178, y, { align: 'center' });
+    y += 2;
+    pdf.line(18, y, 195, y);
+    y += 5;
+    pdf.setFont(undefined, 'normal');
+
+    // Notas agrupadas por categoria
+    const cats = d.categories || {};
+    Object.keys(cats).forEach(cat => {
+        if (cat && Object.keys(cats).length > 1) {
+            if (y > 270) { pdf.addPage(); y = 20; }
+            pdf.setFont(undefined, 'bold');
+            pdf.setFontSize(8);
+            pdf.text(cat, 18, y);
+            pdf.setFont(undefined, 'normal');
+            pdf.setFontSize(9);
+            y += 5;
+        }
+        cats[cat].forEach(n => {
+            if (y > 270) { pdf.addPage(); y = 20; }
+            const mf = n.mediaFinal ?? '';
+            const ext = mf !== '' ? numberToWords(Math.round(parseFloat(mf))) : '';
+            const isNeg = mf !== '' && parseFloat(mf) < nmin;
+
+            pdf.text((n.disciplina || '').substring(0, 50), 18, y);
+            if (isNeg) pdf.setTextColor(220, 38, 38);
+            pdf.setFont(undefined, 'bold');
+            pdf.text(String(mf), 140, y, { align: 'center' });
+            pdf.setFont(undefined, 'normal');
+            pdf.setTextColor(0);
+            pdf.text(ext.substring(0, 22), 178, y, { align: 'center' });
+            y += 5;
+        });
+    });
+
+    // Texto final
+    y += 8;
+    if (y > 255) { pdf.addPage(); y = 20; }
+    pdf.setFontSize(11);
+    const footText = 'Para efeitos legais lhe é passada a presente Declaração, assinada por mim e autenticada com carimbo a óleo/selo branco em uso neste estabelecimento de Ensino.';
+    const footLines = pdf.splitTextToSize(footText, 175);
+    footLines.forEach(line => { pdf.text(line, 18, y); y += 5.5; });
+
+    // Data
+    y += 5;
+    pdf.text(`${sch?.municipality || '____'}, aos ____ de ____________ de 20____`, 195, y, { align: 'right' });
+
+    // Assinaturas - Subdiretor Pedagógico e Director
+    y += 20;
+    if (y > 265) { pdf.addPage(); y = 30; }
+
+    // Subdiretor Pedagógico (esquerda)
+    const subTitle = genderTitle(sub?.genero, 'Subdiretor Pedagógico');
+    pdf.setFontSize(9);
+    pdf.text(subTitle, 45, y, { align: 'center' });
+    pdf.line(15, y + 15, 75, y + 15);
+    pdf.setFont(undefined, 'bold');
+    pdf.text(sub?.name || '', 45, y + 20, { align: 'center' });
+
+    // Director (direita)
+    const dirTitlePDF = genderTitle(dir?.genero, 'Director');
+    pdf.setFont(undefined, 'normal');
+    pdf.text(dirTitlePDF, 160, y, { align: 'center' });
+    pdf.line(130, y + 15, 190, y + 15);
+    pdf.setFont(undefined, 'bold');
+    pdf.text(dir?.name || '', 160, y + 20, { align: 'center' });
+
+    pdf.save(`Declaracao_${al.name?.replace(/\s/g, '_') || 'aluno'}.pdf`);
+    showToast('PDF da declaração gerado!', 'success');
+
+    // Registar atividade
+    logActivity('documento', `Declaração gerada para ${al.name}`);
+}
+
+// CERTIFICADO PDF COMPLETO
+async function downloadCertificadoPDF() {
+    const cd = STATE.cache.certData;
+    if (!cd) { showToast('Gere o certificado primeiro', 'warning'); return; }
+
+    const { aluno: al, yearData: yd, school: sch, classesRange, sortedDiscs, catGroups, mediaFinal, nivelNome, alinea, ciclo, dir } = cd;
+
+    const ff = genderWord(al.genero, 'filho', 'filha');
+    const nn = genderWord(al.genero, 'nascido', 'nascida');
+    const pp = genderWord(al.genero, 'portador', 'portadora');
+    const dirTitle = genderTitle(dir?.genero, 'Director');
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF();
+
+    // Cabeçalho
+    pdf.setFontSize(12);
+    pdf.text('REPÚBLICA DE ANGOLA', 105, 15, { align: 'center' });
+    pdf.setFontSize(10);
+    pdf.text('MINISTÉRIO DA EDUCAÇÃO', 105, 21, { align: 'center' });
+    pdf.setFontSize(18);
+    pdf.setFont(undefined, 'bold');
+    pdf.text('CERTIFICADO', 105, 35, { align: 'center' });
+
+    // Corpo
+    pdf.setFontSize(10);
+    pdf.setFont(undefined, 'normal');
+
+    const bodyText = `${dir?.name || '____'}, ${dirTitle} ${genderWord(dir?.genero, 'do', 'da')} ${sch?.name || '____'}${sch?.denominacao && ciclo === 'II Ciclo' ? ', denominado ' + sch.denominacao : ''}${sch?.decreto ? ', criado sobre Decreto Executivo ' + sch.decreto : ''}, ao abrigo do disposto na alínea ${alinea} do ${sch?.artigo || 'artigo 109°'} da ${sch?.lei || 'Lei nº 32/20 de 12 de Agosto'}, certifica que ${al.name || '____'}, ${ff} de ${al.nomePai || '____'} e de ${al.nomeMae || '____'}, ${nn} aos ${al.dataNasc || '___/___/____'}, natural de ${al.naturalidade || '____'}, Município de ${al.municipio || '____'}, Província de ${al.provincia || '____'}, ${pp} de B.I nº ${al.bi || '____'}, passado pelo Arquivo de Identificação de ${al.biArquivo || '____'}, aos ${al.biData || '___/___/____'}, concluiu no ano lectivo ${yd?.ano || '____/____'} o ${nivelNome}${al.curso ? ', na área de ' + al.curso : ''}, conforme consta do processo individual nº ${al.processo || '____'}, com a média final de ${mediaFinal} Valores, obtidas pelas seguintes classificações por disciplinas:`;
+
+    const lines = pdf.splitTextToSize(bodyText, 175);
+    let y = 44;
+    lines.forEach(line => {
+        if (y > 270) { pdf.addPage(); y = 20; }
+        pdf.text(line, 18, y);
+        y += 5;
+    });
+
+    // Tabela
+    y += 5;
+    const numCols = classesRange.length;
+    const discW = 50;
+    const colW = Math.min(16, (140 - discW) / (numCols + 2));
+    const startX = 18;
+
+    pdf.setFontSize(7);
+    pdf.setFont(undefined, 'bold');
+    pdf.text('Disciplinas', startX, y);
+    classesRange.forEach((c, i) => {
+        pdf.text(c.replace(' Classe', 'ª'), startX + discW + i * colW + colW / 2, y, { align: 'center' });
+    });
+    pdf.text('MF', startX + discW + numCols * colW + colW / 2, y, { align: 'center' });
+    pdf.text('Por extenso', startX + discW + (numCols + 1) * colW + 15, y);
+
+    y += 2;
+    pdf.line(startX, y, 195, y);
+    y += 4;
+    pdf.setFont(undefined, 'normal');
+
+    Object.keys(catGroups).forEach(cat => {
+        if (cat && Object.keys(catGroups).length > 1) {
+            if (y > 270) { pdf.addPage(); y = 20; }
+            pdf.setFont(undefined, 'bold');
+            pdf.setFontSize(7);
+            pdf.text(cat, startX, y);
+            pdf.setFont(undefined, 'normal');
+            y += 4;
+        }
+        catGroups[cat].forEach(([nome, info]) => {
+            if (y > 270) { pdf.addPage(); y = 20; }
+            pdf.setFontSize(7);
+            pdf.text((nome || '').substring(0, 25), startX, y);
+
+            classesRange.forEach((c, i) => {
+                const val = info.grades[c];
+                pdf.text(val != null ? String(val) : '–', startX + discW + i * colW + colW / 2, y, { align: 'center' });
+            });
+
+            const mf = info.media;
+            pdf.setFont(undefined, 'bold');
+            pdf.text(mf != null ? String(mf) : '', startX + discW + numCols * colW + colW / 2, y, { align: 'center' });
+            pdf.setFont(undefined, 'normal');
+
+            const ext = mf != null ? numberToWords(Math.round(mf)) : '';
+            pdf.text(ext.substring(0, 22), startX + discW + (numCols + 1) * colW + 15, y);
+            y += 4;
+        });
+    });
+
+    // Texto final
+    y += 8;
+    if (y > 255) { pdf.addPage(); y = 20; }
+    pdf.setFontSize(10);
+    const footText = `Para efeitos legais lhe é passado o presente Certificado, que consta no livro de registo nº ______, folha ____, assinado por mim e autenticado com carimbo a óleo/selo branco em uso neste estabelecimento de Ensino.`;
+    const footLines = pdf.splitTextToSize(footText, 175);
+    footLines.forEach(line => { pdf.text(line, 18, y); y += 5; });
+
+    // Data
+    y += 5;
+    pdf.text(`${sch?.name || ''}, AOS ____ DE ____________ DE 20____`, 105, y, { align: 'center' });
+
+    // Conferido por: ALINHADO À ESQUERDA
+    y += 15;
+    if (y > 260) { pdf.addPage(); y = 30; }
+
+    pdf.setFontSize(10);
+    pdf.text('Conferido por:', 18, y);
+
+    y += 5;
+    pdf.setFontSize(9);
+    pdf.text(dirTitle, 18, y);
+
+    y += 15;
+    pdf.line(18, y, 80, y); // Traço para assinar
+
+    y += 5;
+    pdf.setFont(undefined, 'bold');
+    pdf.text(dir?.name || '', 18, y);
+
+    pdf.save(`Certificado_${al.name?.replace(/\s/g, '_') || 'aluno'}.pdf`);
+    showToast('PDF do certificado gerado!', 'success');
+
+    logActivity('documento', `Certificado gerado para ${al.name}`);
+}
+
+// ========================================
+// 4. BOLETIM PDF COMPLETO (4 por folha)
+// ========================================
+async function downloadBoletinsPDF() {
+    const data = STATE.cache.boletinsData;
+    if (!data?.alunos?.length) { showToast('Gere os boletins primeiro', 'warning'); return; }
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('portrait', 'mm', 'a4');
+    const school = STATE.currentSchool;
+    const { alunos, discs, notasMap, classeNome, curso, trimestre, notaMax, notaMin, yearData } = data;
+    const trimLabel = trimestre + 'º Trimestre';
+    const dir = getDirectorInfo();
+
+    const bW = 90, bH = 130;
+    const positions = [
+        { x: 5, y: 5 }, { x: 105, y: 5 },
+        { x: 5, y: 143 }, { x: 105, y: 143 }
+    ];
+
+    alunos.forEach((aluno, idx) => {
+        const posIdx = idx % 4;
+        if (idx > 0 && posIdx === 0) pdf.addPage();
+        const { x, y } = positions[posIdx];
+
+        pdf.setDrawColor(150);
+        pdf.rect(x, y, bW, bH);
+
+        // Header
+        pdf.setFontSize(6); pdf.setTextColor(0);
+        pdf.text('REPÚBLICA DE ANGOLA', x + bW / 2, y + 5, { align: 'center' });
+        pdf.text('MINISTÉRIO DA EDUCAÇÃO', x + bW / 2, y + 9, { align: 'center' });
+        pdf.setFontSize(7); pdf.setFont(undefined, 'bold');
+        pdf.text((school?.name || '').substring(0, 40), x + bW / 2, y + 14, { align: 'center' });
+        pdf.setFontSize(8);
+        pdf.text(`BOLETIM - ${trimLabel}`, x + bW / 2, y + 20, { align: 'center' });
+
+        // Aluno info
+        pdf.setFontSize(6); pdf.setFont(undefined, 'normal');
+        pdf.setTextColor(206, 17, 38);
+        pdf.text(`Aluno: ${(aluno.name || '').substring(0, 35)}`, x + 3, y + 26);
+        pdf.setTextColor(0);
+        pdf.text(`Classe: ${classeNome} | Turma: ${aluno.turmaNome || ''} | Ano: ${yearData?.ano || ''}`, x + 3, y + 30);
+        if (curso) pdf.text(`Curso: ${curso}`, x + 3, y + 34);
+
+        // Notas
+        let ty = y + (curso ? 38 : 34);
+        pdf.setFontSize(5.5); pdf.setFont(undefined, 'bold');
+        pdf.text('Disciplina', x + 3, ty);
+        pdf.text('MAC', x + 60, ty, { align: 'center' });
+        pdf.text('NPT', x + 72, ty, { align: 'center' });
+        pdf.text('MT', x + 84, ty, { align: 'center' });
+        pdf.line(x + 2, ty + 1, x + bW - 2, ty + 1);
+        ty += 4;
+
+        pdf.setFont(undefined, 'normal');
+        discs.forEach(d => {
+            if (ty > y + bH - 20) return;
+            const key = `${aluno.id}_${d.id}`;
+            const nota = notasMap[key] || {};
+            const mac = nota[`mac${trimestre}`] ?? '';
+            const npt = nota[`npt${trimestre}`] ?? '';
+            const mt = nota[`mt${trimestre}`] ?? '';
+            const isNeg = mt !== '' && parseFloat(mt) < notaMin;
+
+            pdf.text((d.nome || '').substring(0, 30), x + 3, ty);
+            pdf.text(String(mac), x + 60, ty, { align: 'center' });
+            pdf.text(String(npt), x + 72, ty, { align: 'center' });
+            if (isNeg) pdf.setTextColor(220, 38, 38);
+            pdf.setFont(undefined, 'bold');
+            pdf.text(String(mt), x + 84, ty, { align: 'center' });
+            pdf.setFont(undefined, 'normal');
+            pdf.setTextColor(0);
+            ty += 3.5;
+        });
+
+        // Assinatura Director
+        ty = y + bH - 14;
+        pdf.setFontSize(5);
+        const dirT = genderTitle(dir.genero, 'Director');
+        pdf.text(dirT, x + bW / 2, ty, { align: 'center' });
+        pdf.line(x + 15, ty + 8, x + bW - 15, ty + 8);
+        pdf.setFont(undefined, 'bold');
+        pdf.text(dir.name || '', x + bW / 2, ty + 11, { align: 'center' });
+        pdf.setFont(undefined, 'normal');
+    });
+
+    pdf.save(`Boletins_${classeNome}_T${trimestre}.pdf`);
+    showToast('PDF com 4 boletins por folha!', 'success');
+    logActivity('documento', `Boletins gerados - ${classeNome} T${trimestre}`);
+}
+
+// ========================================
+// 5. PASSES PDF (6 por folha) COM DADOS COMPLETOS
+// ========================================
+async function downloadPassesPDF(tipo) {
+    const data = STATE.cache.passesData;
+    if (!data?.items?.length) { showToast('Gere os passes primeiro', 'warning'); return; }
+
+    const { jsPDF } = window.jspdf;
+    const pdf = new jsPDF('portrait', 'mm', 'a4');
+    const school = STATE.currentSchool;
+    const items = data.items;
+    const yearData = data.yearData;
+    const dir = getDirectorInfo();
+    const dirT = genderTitle(dir.genero, 'Director');
+
+    const pW = 90, pH = 85;
+    const positions = [
+        { x: 5, y: 5 }, { x: 105, y: 5 },
+        { x: 5, y: 97 }, { x: 105, y: 97 },
+        { x: 5, y: 189 }, { x: 105, y: 189 }
+    ];
+
+    items.forEach((item, idx) => {
+        const posIdx = idx % 6;
+        if (idx > 0 && posIdx === 0) pdf.addPage();
+        const { x, y } = positions[posIdx];
+
+        pdf.setDrawColor(206, 17, 38);
+        pdf.setLineWidth(0.5);
+        pdf.rect(x, y, pW, pH);
+
+        pdf.setFontSize(6); pdf.setTextColor(0);
+        pdf.text('REPÚBLICA DE ANGOLA', x + pW / 2, y + 5, { align: 'center' });
+        pdf.setFontSize(7); pdf.setFont(undefined, 'bold');
+        pdf.setTextColor(206, 17, 38);
+        pdf.text((school?.name || '').substring(0, 35), x + pW / 2, y + 10, { align: 'center' });
+
+        pdf.setFontSize(8); pdf.setTextColor(255, 255, 255);
+        pdf.setFillColor(206, 17, 38);
+        const label = data.type === 'alunos' ? 'PASSE ESCOLAR' : 'PASSE FUNCIONAL';
+        pdf.roundedRect(x + 20, y + 13, 50, 6, 1, 1, 'F');
+        pdf.text(label, x + pW / 2, y + 17.5, { align: 'center' });
+
+        pdf.setTextColor(0); pdf.setFont(undefined, 'normal');
+        pdf.setDrawColor(200);
+        pdf.rect(x + 4, y + 22, 20, 24);
+        pdf.setFontSize(5);
+        pdf.text('FOTO', x + 14, y + 36, { align: 'center' });
+
+        let iy = y + 25;
+        pdf.setFontSize(8); pdf.setFont(undefined, 'bold');
+        pdf.setTextColor(206, 17, 38);
+        pdf.text((item.name || '').substring(0, 25), x + 27, iy);
+        pdf.setTextColor(0); pdf.setFont(undefined, 'normal');
+        pdf.setFontSize(6.5);
+        iy += 5;
+
+        if (data.type === 'alunos') {
+            pdf.text(`Classe: ${item.classeNome || ''}`, x + 27, iy); iy += 4;
+            pdf.text(`Turma: ${item.turmaNome || ''}`, x + 27, iy); iy += 4;
+            pdf.text(`Matrícula: ${item.matricula || ''}`, x + 27, iy); iy += 4;
+            pdf.text(`Turno: ${item.turnoNome || ''}`, x + 27, iy); iy += 4;
+            pdf.text(`Ano: ${yearData?.ano || ''}`, x + 27, iy);
+        } else {
+            pdf.text(`Cargo: ${item.cargo || ''}`, x + 27, iy); iy += 4;
+            pdf.text(`Área: ${item.area || ''}`, x + 27, iy); iy += 4;
+            pdf.text(`Nº Agente: ${item.numAgente || '-'}`, x + 27, iy); iy += 4;
+            pdf.text(`BI: ${item.bi || '-'}`, x + 27, iy);
+        }
+
+        // Assinatura
+        pdf.setFontSize(5);
+        pdf.text(`Válido: ${yearData?.ano || new Date().getFullYear()}`, x + pW / 2, y + pH - 18, { align: 'center' });
+        pdf.text(dirT, x + pW / 2, y + pH - 14, { align: 'center' });
+        pdf.line(x + 15, y + pH - 8, x + pW - 15, y + pH - 8);
+        pdf.setFont(undefined, 'bold');
+        pdf.text(dir.name || '', x + pW / 2, y + pH - 5, { align: 'center' });
+        pdf.setFont(undefined, 'normal');
+    });
+
+    pdf.save(`Passes_${data.type}.pdf`);
+    showToast('PDF com 6 passes por folha!', 'success');
+    logActivity('documento', `Passes gerados (${data.type})`);
+}
+
+// ========================================
+// 6. REGISTAR ATIVIDADES AUTOMATICAMENTE
+// ========================================
+// Interceptar saves para log automático
+
+// Override showToast para detectar saves bem sucedidos
+const _originalShowToast = showToast;
+showToast = function (message, type) {
+    _originalShowToast(message, type);
+
+    // Auto-log atividades quando algo é salvo com sucesso
+    if (type === 'success' && STATE.currentSchool) {
+        const msg = message.toLowerCase();
+        if (msg.includes('matricul') || msg.includes('aluno')) {
+            logActivity('matricula', message);
+        } else if (msg.includes('nota')) {
+            logActivity('nota', message);
+        } else if (msg.includes('pagamento') || msg.includes('recibo')) {
+            logActivity('pagamento', message);
+        } else if (msg.includes('presença') || msg.includes('presenças')) {
+            logActivity('presenca', message);
+        } else if (msg.includes('declaração') || msg.includes('certificado') || msg.includes('boletim') || msg.includes('passe')) {
+            logActivity('documento', message);
+        }
+    }
+};
+
+// ========================================
+// PRONTO
+// ========================================
+console.log('%c✅ CORREÇÃO V6 APLICADA!', 'color:#059669;font-size:14px;font-weight:bold;');
+console.log('  ✓ PDFs completos: Declaração, Certificado, Boletins, Passes');
+console.log('  ✓ Atividades recentes no dashboard');
+console.log('  ✓ Consulta pública com tratamento de permissões');
+console.log('  ✓ Log automático de atividades');
+</script>
+<script>
+// ============================================================
+// CORREÇÃO V7 - SETUP ADMIN SEGURO + REGRAS FIREBASE
+// ============================================================
+console.log('🔧 Correção V7: Setup seguro + Regras Firebase...');
+
+// ========================================
+// 1. VERIFICAÇÃO DE SETUP ROBUSTA
+// Só mostra página de cadastro se NÃO existe admin
+// Se offline ou erro de rede → mostra login
+// ========================================
+async function checkSetupRequired() {
+    try {
+        // Timeout de 8 segundos para verificação
+        const timeoutPromise = new Promise((_, reject) => {
+            setTimeout(() => reject(new Error('timeout')), 8000);
+        });
+
+        const checkPromise = db.collection('system').doc('config').get();
+
+        let adminSnap;
+        try {
+            adminSnap = await Promise.race([checkPromise, timeoutPromise]);
+        } catch (timeoutErr) {
+            // Timeout ou erro de rede → mostrar login
+            console.warn('Verificação de setup: timeout ou offline. Mostrando login.');
+            showLoginPage();
+            return;
+        }
+
+        if (adminSnap.exists && adminSnap.data().adminCreated) {
+            // Admin já existe → carregar insígnia e mostrar login
+            if (adminSnap.data().insigniaBase64) {
+                STATE.insigniaBase64 = adminSnap.data().insigniaBase64;
+            }
+            showLoginPage();
+        } else {
+            // Admin NÃO existe → mostrar setup
+            showSetupPage();
+        }
+
+    } catch (e) {
+        console.error('checkSetupRequired error:', e);
+
+        // Qualquer erro (rede, permissão, etc.) → mostrar login
+        // É mais seguro mostrar login do que setup
+        if (e.code === 'permission-denied' ||
+            e.code === 'unavailable' ||
+            e.code === 'deadline-exceeded' ||
+            e.message?.includes('network') ||
+            e.message?.includes('offline') ||
+            e.message?.includes('Failed to fetch') ||
+            e.message?.includes('timeout')) {
+
+            console.warn('Erro de rede/permissão. Mostrando página de login.');
+            showLoginPage();
+        } else {
+            // Erro desconhecido - tentar mostrar login por segurança
+            showLoginPage();
+        }
+    }
+}
+
+// ========================================
+// 2. SETUP DO ADMIN - COM PROTEÇÕES EXTRAS
+// ========================================
+async function handleSetup(e) {
+    e.preventDefault();
+
+    const name = document.getElementById('setupName').value.trim();
+    const email = document.getElementById('setupEmail').value.trim();
+    const phone = document.getElementById('setupPhone').value.trim();
+    const password = document.getElementById('setupPassword').value;
+    const confirm = document.getElementById('setupPasswordConfirm').value;
+
+    // Validações
+    if (!name) { showToast('Nome é obrigatório!', 'error'); return false; }
+    if (!email) { showToast('Email é obrigatório!', 'error'); return false; }
+    if (!phone) { showToast('Telefone é obrigatório!', 'error'); return false; }
+    if (password.length < 6) { showToast('Senha: mínimo 6 caracteres!', 'error'); return false; }
+    if (password !== confirm) { showToast('Senhas não coincidem!', 'error'); return false; }
+
+    showLoading();
+
+    try {
+        // ===== VERIFICAÇÃO DUPLA: Admin já existe? =====
+        let configDoc;
+        try {
+            configDoc = await db.collection('system').doc('config').get();
+        } catch (netErr) {
+            hideLoading();
+            showToast('Sem conexão! Verifique a internet e tente novamente.', 'error');
+            return false;
+        }
+
+        if (configDoc.exists && configDoc.data().adminCreated) {
+            hideLoading();
+            showToast('Administrador Geral já existe! Faça login com as credenciais existentes.', 'error');
+            showLoginPage();
+            return false;
+        }
+
+        // ===== VERIFICAÇÃO: Já existe algum user admin no Auth? =====
+        // Isto previne duplicidade mesmo se o Firestore falhou antes
+        try {
+            const existingUsers = await db.collection('users')
+                .where('role', '==', 'super_admin').limit(1).get();
+            if (!existingUsers.empty) {
+                hideLoading();
+                showToast('Já existe um administrador no sistema! Faça login.', 'error');
+                // Corrigir o config se estiver incompleto
+                await db.collection('system').doc('config').set({
+                    adminCreated: true,
+                    adminUid: existingUsers.docs[0].id,
+                    adminEmail: existingUsers.docs[0].data().email,
+                    systemName: 'SGE-NG',
+                    version: '1.0.0'
+                }, { merge: true });
+                showLoginPage();
+                return false;
+            }
+        } catch (e) {
+            // Se não conseguir verificar, continuar (pode ser primeiro acesso)
+            console.warn('Não foi possível verificar users existentes:', e.message);
+        }
+
+        // ===== Comprimir insígnia se fornecida =====
+        let insigniaB64 = null;
+        const insigniaFile = document.getElementById('setupInsigniaFile')?.files[0];
+        if (insigniaFile) {
+            try {
+                insigniaB64 = await compressImage(insigniaFile, 200, 0.8);
+            } catch (imgErr) {
+                console.warn('Insígnia não processada:', imgErr.message);
+                // Continuar sem insígnia
+            }
+        }
+
+        // ===== Criar conta Firebase Auth =====
+        let userCredential;
+        try {
+            userCredential = await auth.createUserWithEmailAndPassword(email, password);
+        } catch (authErr) {
+            hideLoading();
+            switch (authErr.code) {
+                case 'auth/email-already-in-use':
+                    showToast('Este email já está registado! Use outro ou faça login.', 'error');
+                    break;
+                case 'auth/weak-password':
+                    showToast('Senha muito fraca!', 'error');
+                    break;
+                case 'auth/invalid-email':
+                    showToast('Email inválido!', 'error');
+                    break;
+                case 'auth/network-request-failed':
+                    showToast('Sem internet! Verifique a conexão.', 'error');
+                    break;
+                default:
+                    showToast('Erro: ' + authErr.message, 'error');
+            }
+            return false;
+        }
+
+        const uid = userCredential.user.uid;
+
+        // ===== Salvar perfil do admin no Firestore =====
+        try {
+            await db.collection('users').doc(uid).set({
+                name: name,
+                email: email,
+                phone: phone,
+                role: 'super_admin',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                active: true,
+                photo: null
+            });
+
+            // Salvar config do sistema
+            await db.collection('system').doc('config').set({
+                adminCreated: true,
+                adminUid: uid,
+                adminEmail: email,
+                systemName: 'SGE-NG',
+                createdAt: firebase.firestore.FieldValue.serverTimestamp(),
+                insigniaBase64: insigniaB64,
+                version: '1.0.0'
+            });
+
+            STATE.insigniaBase64 = insigniaB64;
+            showToast('Administrador Geral criado com sucesso! Bem-vindo ao SGE-NG!', 'success');
+
+        } catch (fsErr) {
+            // Se falhou ao salvar no Firestore, apagar a conta Auth
+            console.error('Erro ao salvar no Firestore:', fsErr);
+            try {
+                await userCredential.user.delete();
+            } catch (delErr) {
+                console.error('Erro ao limpar conta:', delErr);
+            }
+            hideLoading();
+            showToast('Erro ao salvar dados. Tente novamente.', 'error');
+            return false;
+        }
+
+        hideLoading();
+        // O auth.onAuthStateChanged vai detectar e carregar o app
+
+    } catch (error) {
+        hideLoading();
+        console.error('Setup error:', error);
+        showToast('Erro inesperado: ' + error.message, 'error');
+    }
+
+    return false;
+}
+
+// ========================================
+// 3. AUTH STATE OBSERVER - MELHORADO
+// ========================================
+auth.onAuthStateChanged(async (user) => {
+    if (user) {
+        // Verificar se é login anónimo (da consulta pública)
+        if (user.isAnonymous) {
+            hideLoading();
+            return; // Não carregar app para user anónimo
+        }
+
+        STATE.currentUser = user;
+        await loadUserProfile(user.uid);
+    } else {
+        STATE.currentUser = null;
+        STATE.userProfile = null;
+        STATE.currentSchool = null;
+        STATE.currentYearId = null;
+        STATE.currentYear = null;
+        STATE.cache = {};
+        hideLoading();
+        await checkSetupRequired();
+    }
+});
+
+// ========================================
+// 4. LOAD USER PROFILE - COM FALLBACK
+// ========================================
+async function loadUserProfile(uid) {
+    try {
+        let doc = await db.collection('users').doc(uid).get();
+
+        if (!doc.exists) {
+            // Tentar encontrar por email em professores/funcionários
+            const email = STATE.currentUser.email;
+            if (email) {
+                const schoolsSnap = await db.collection('schools').get();
+                for (const schoolDoc of schoolsSnap.docs) {
+                    // Verificar professores
+                    const profs = await db.collection('schools').doc(schoolDoc.id)
+                        .collection('professores').get();
+                    const prof = profs.docs.find(d => d.data().email === email);
+                    if (prof) {
+                        await db.collection('users').doc(uid).set({
+                            name: prof.data().name, email,
+                            phone: prof.data().telefone1 || '',
+                            role: 'professor', schoolId: schoolDoc.id,
+                            active: true,
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        doc = await db.collection('users').doc(uid).get();
+                        break;
+                    }
+
+                    // Verificar funcionários
+                    const funcs = await db.collection('schools').doc(schoolDoc.id)
+                        .collection('funcionarios').get();
+                    const func = funcs.docs.find(d => d.data().email === email);
+                    if (func) {
+                        const cargoRole = getCargoRole(func.data().cargo) || 'secretario';
+                        await db.collection('users').doc(uid).set({
+                            name: func.data().name, email,
+                            phone: func.data().telefone1 || '',
+                            role: cargoRole, schoolId: schoolDoc.id,
+                            active: true,
+                            createdAt: firebase.firestore.FieldValue.serverTimestamp()
+                        });
+                        doc = await db.collection('users').doc(uid).get();
+                        break;
+                    }
+                }
+            }
+        }
+
+        if (doc.exists) {
+            STATE.userProfile = { id: uid, ...doc.data() };
+
+            // Verificar se user está ativo
+            if (STATE.userProfile.active === false) {
+                showToast('Conta desativada! Contacte o administrador.', 'error');
+                await auth.signOut();
+                hideLoading();
+                return;
+            }
+
+            // Carregar insígnia
+            try {
+                const sysConfig = await db.collection('system').doc('config').get();
+                if (sysConfig.exists && sysConfig.data().insigniaBase64) {
+                    STATE.insigniaBase64 = sysConfig.data().insigniaBase64;
+                }
+            } catch (e) { }
+
+            // Carregar escola se tiver
+            if (STATE.userProfile.schoolId) {
+                try {
+                    const schoolDoc = await db.collection('schools')
+                        .doc(STATE.userProfile.schoolId).get();
+                    if (schoolDoc.exists) {
+                        STATE.currentSchool = { id: schoolDoc.id, ...schoolDoc.data() };
+                        await loadActiveYear(STATE.currentSchool.id);
+                    }
+                } catch (e) { console.warn('Erro ao carregar escola:', e.message); }
+            }
+
+            hideLoading();
+            showApp();
+        } else {
+            hideLoading();
+            showToast('Perfil não encontrado! Contacte o administrador.', 'error');
+            await auth.signOut();
+        }
+
+    } catch (e) {
+        hideLoading();
+        console.error('Load profile error:', e);
+
+        if (e.code === 'unavailable' || e.message?.includes('network')) {
+            showToast('Sem conexão! Verifique a internet.', 'error');
+        } else {
+            showToast('Erro ao carregar perfil.', 'error');
+        }
+        await auth.signOut();
+    }
+}
+
+// ========================================
+// 5. LOGIN - COM TRATAMENTO DE REDE
+// ========================================
+async function handleLogin(e) {
+    e.preventDefault();
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+
+    if (!email || !password) {
+        showToast('Preencha email e senha!', 'error');
+        return false;
+    }
+
+    // Verificar conexão
+    if (!navigator.onLine) {
+        showToast('Sem internet! Verifique a conexão e tente novamente.', 'error');
+        return false;
+    }
+
+    showLoading();
+    try {
+        await auth.signInWithEmailAndPassword(email, password);
+        showToast('Login realizado!', 'success');
+    } catch (error) {
+        hideLoading();
+        switch (error.code) {
+            case 'auth/user-not-found':
+                showToast('Email não encontrado!', 'error'); break;
+            case 'auth/wrong-password':
+                showToast('Senha incorreta!', 'error'); break;
+            case 'auth/invalid-email':
+                showToast('Email inválido!', 'error'); break;
+            case 'auth/user-disabled':
+                showToast('Conta desativada!', 'error'); break;
+            case 'auth/too-many-requests':
+                showToast('Muitas tentativas! Aguarde.', 'warning'); break;
+            case 'auth/invalid-credential':
+                showToast('Email ou senha incorretos!', 'error'); break;
+            case 'auth/network-request-failed':
+                showToast('Sem internet!', 'error'); break;
+            default:
+                showToast('Erro: ' + error.message, 'error');
+        }
+    }
+    return false;
+}
+
+// ========================================
+// 6. RECUPERAÇÃO DE SENHA
+// ========================================
+async function handleForgotPassword(e) {
+    e.preventDefault();
+    const email = document.getElementById('forgotEmail').value.trim();
+
+    if (!email) { showToast('Digite o email!', 'error'); return false; }
+
+    if (!navigator.onLine) {
+        showToast('Sem internet!', 'error');
+        return false;
+    }
+
+    showLoading();
+    try {
+        await auth.sendPasswordResetEmail(email);
+        showToast('Email de recuperação enviado! Verifique sua caixa e spam.', 'success');
+        showLoginForm();
+    } catch (error) {
+        switch (error.code) {
+            case 'auth/user-not-found':
+                showToast('Email não encontrado no sistema!', 'error'); break;
+            case 'auth/invalid-email':
+                showToast('Email inválido!', 'error'); break;
+            case 'auth/too-many-requests':
+                showToast('Muitas tentativas! Aguarde.', 'warning'); break;
+            default:
+                showToast('Erro: ' + error.message, 'error');
+        }
+    }
+    hideLoading();
+    return false;
+}
+
+// ========================================
+// 7. CONSULTA PÚBLICA - SEM ERRO DE PERMISSÃO
+// Usa a mesma função FS_getAll que já funciona
+// ========================================
+async function searchStudentPublic() {
+    const search = document.getElementById('consultSearch')?.value?.trim();
+    if (!search || search.length < 3) {
+        showToast('Digite pelo menos 3 caracteres', 'warning');
+        return;
+    }
+
+    const results = document.getElementById('consultResults');
+    results.innerHTML = '<div class="spinner" style="margin:20px auto;"></div>';
+
+    try {
+        // Se não está logado, fazer login anónimo
+        if (!auth.currentUser) {
+            try {
+                await auth.signInAnonymously();
+                // Esperar um momento para o auth processar
+                await new Promise(resolve => setTimeout(resolve, 1000));
+            } catch (anonErr) {
+                // Se login anónimo falhar, mostrar instruções
+                showFirebaseRulesError(results);
+                return;
+            }
+        }
+
+        let found = [];
+
+        try {
+            const schoolsSnap = await db.collection('schools').get();
+
+            for (const sDoc of schoolsSnap.docs) {
+                const sData = sDoc.data();
+                const ySnap = await db.collection('schools').doc(sDoc.id)
+                    .collection('anos_letivos').get();
+
+                let openYear = null;
+                for (const yDoc of ySnap.docs) {
+                    if (yDoc.data().status === 'aberto') {
+                        openYear = { id: yDoc.id, ...yDoc.data() };
+                        break;
+                    }
+                }
+                if (!openYear) continue;
+
+                const aSnap = await db.collection('schools').doc(sDoc.id)
+                    .collection('anos_letivos').doc(openYear.id)
+                    .collection('alunos').get();
+
+                const sl = search.toLowerCase();
+                aSnap.docs.forEach(aDoc => {
+                    const a = aDoc.data();
+                    if (a.estado !== 'Ativo') return;
+                    if ((a.bi || '').toLowerCase().includes(sl) ||
+                        (a.processo || '').toLowerCase().includes(sl) ||
+                        (a.matricula || '').toLowerCase().includes(sl) ||
+                        (a.name || '').toLowerCase().includes(sl)) {
+                        found.push({
+                            ...a, id: aDoc.id,
+                            schoolName: sData.name, schoolId: sDoc.id,
+                            yearId: openYear.id, yearAno: openYear.ano
+                        });
+                    }
+                });
+            }
+        } catch (queryErr) {
+            if (queryErr.code === 'permission-denied' ||
+                queryErr.message?.includes('permission') ||
+                queryErr.message?.includes('Missing')) {
+                showFirebaseRulesError(results);
+                return;
+            }
+            throw queryErr;
+        }
+
+        // Fazer logout anónimo depois da consulta
+        if (auth.currentUser?.isAnonymous) {
+            try { await auth.signOut(); } catch (e) { }
+        }
+
+        if (!found.length) {
+            results.innerHTML = `<div class="empty-state">
+                <i class="fas fa-search"></i><h3>Nenhum aluno encontrado</h3>
+                <p>Verifique o BI, matrícula ou nome.</p>
+            </div>`;
+            return;
+        }
+
+        let html = '';
+        found.forEach(a => {
+            html += `<div class="card" style="margin-bottom:16px;">
+                <div class="card-header">
+                    <div><h3><span class="student-name">${a.name || ''}</span></h3>
+                    <small style="color:var(--gray-500);">${a.schoolName} | ${a.yearAno || ''}</small></div>
+                    <span class="badge-status badge-active">Ativo</span>
+                </div>
+                <div class="card-body">
+                    <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:6px;font-size:13px;margin-bottom:10px;">
+                        <div><strong>Mat.:</strong> ${a.matricula || '-'}</div>
+                        <div><strong>Classe:</strong> ${a.classeNome || '-'}</div>
+                        <div><strong>Turma:</strong> ${a.turmaNome || '-'}</div>
+                        <div><strong>BI:</strong> ${a.bi || '-'}</div>
+                    </div>
+                    <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                        <button class="btn btn-sm btn-primary" onclick="viewConsultNotas('${a.schoolId}','${a.yearId}','${a.id}')"><i class="fas fa-star"></i> Notas</button>
+                        <button class="btn btn-sm btn-secondary" onclick="viewConsultFaltas('${a.schoolId}','${a.yearId}','${a.id}')"><i class="fas fa-clipboard"></i> Faltas</button>
+                        <button class="btn btn-sm btn-warning" onclick="viewConsultFinanceiro('${a.schoolId}','${a.yearId}','${a.id}')"><i class="fas fa-money-bill"></i> Financeiro</button>
+                    </div>
+                    <div id="consultDetail_${a.id}" style="margin-top:10px;"></div>
+                </div>
+            </div>`;
+        });
+        results.innerHTML = html;
+
+    } catch (e) {
+        console.error('Consulta error:', e);
+        if (e.code === 'permission-denied' || e.message?.includes('permission')) {
+            showFirebaseRulesError(results);
+        } else {
+            results.innerHTML = `<div class="empty-state">
+                <i class="fas fa-exclamation-triangle"></i>
+                <h3>Erro na consulta</h3><p>${e.message}</p>
+            </div>`;
+        }
+
+        // Limpar login anónimo
+        if (auth.currentUser?.isAnonymous) {
+            try { await auth.signOut(); } catch (ex) { }
+        }
+    }
+}
+
+function showFirebaseRulesError(container) {
+    container.innerHTML = `<div class="card" style="border-left:4px solid var(--danger);">
+        <div class="card-body">
+            <h3 style="color:var(--danger);"><i class="fas fa-lock"></i> Configuração Necessária</h3>
+            <p style="margin-top:8px;">O administrador do sistema precisa configurar as regras do Firebase para permitir a consulta pública.</p>
+            <div style="margin-top:16px;padding:16px;background:#1f2937;border-radius:8px;font-family:monospace;font-size:12px;color:#4ade80;overflow-x:auto;">
+                <div style="color:#94a3b8;margin-bottom:8px;">// Copie e cole no Firebase Console → Firestore → Rules</div>
+                <div>rules_version = '2';</div>
+                <div>service cloud.firestore {</div>
+                <div>&nbsp;&nbsp;match /databases/{database}/documents {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;</div>
+                <div style="color:#fbbf24;">&nbsp;&nbsp;&nbsp;&nbsp;// Sistema e utilizadores - apenas autenticados</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;match /system/{doc} {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read: if true;</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow write: if request.auth != null;</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;}</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;match /users/{userId} {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read, write: if request.auth != null;</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;}</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;</div>
+                <div style="color:#fbbf24;">&nbsp;&nbsp;&nbsp;&nbsp;// Escolas e dados - leitura pública, escrita autenticada</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;match /schools/{schoolId}/{document=**} {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read: if true;</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow write: if request.auth != null;</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;}</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;</div>
+                <div style="color:#fbbf24;">&nbsp;&nbsp;&nbsp;&nbsp;// Backup logs</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;match /backup_logs/{doc} {</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;allow read, write: if request.auth != null;</div>
+                <div>&nbsp;&nbsp;&nbsp;&nbsp;}</div>
+                <div>&nbsp;&nbsp;}</div>
+                <div>}</div>
+            </div>
+            <div style="margin-top:16px;">
+                <strong>Passos:</strong>
+                <ol style="margin-top:8px;font-size:13px;color:var(--gray-700);">
+                    <li>Acesse <a href="https://console.firebase.google.com/project/sge4-8b772/firestore/rules" target="_blank" style="color:var(--primary);">Firebase Console → Firestore → Rules</a></li>
+                    <li>Apague todo o conteúdo existente</li>
+                    <li>Cole as regras acima</li>
+                    <li>Clique em <strong>"Publish"</strong></li>
+                    <li>Volte aqui e tente novamente</li>
+                </ol>
+            </div>
+            <div style="margin-top:12px;padding:10px;background:#fef3c7;border-radius:8px;font-size:12px;">
+                <i class="fas fa-info-circle"></i> <strong>Explicação:</strong>
+                Estas regras permitem que qualquer pessoa <em>leia</em> dados das escolas (para consulta de encarregados),
+                mas só utilizadores <em>autenticados</em> (com login) podem <em>escrever</em> (alterar dados).
+            </div>
+        </div>
+    </div>`;
+}
+
+// ========================================
+// 8. INDICADOR DE CONEXÃO
+// ========================================
+window.addEventListener('online', () => {
+    showToast('Conexão restaurada!', 'success');
+});
+
+window.addEventListener('offline', () => {
+    showToast('Sem internet! Algumas funcionalidades podem não funcionar.', 'warning');
+});
+
+// ========================================
+// 9. LOADING SAFETY - Nunca fica preso
+// ========================================
+let loadingTimer;
+function showLoading() {
+    const el = document.getElementById('loadingOverlay');
+    if (el) el.style.display = 'flex';
+    clearTimeout(loadingTimer);
+    loadingTimer = setTimeout(() => {
+        hideLoading();
+        if (!STATE.currentUser) {
+            showLoginPage();
+        }
+    }, 20000); // 20 segundos máximo
+}
+
+function hideLoading() {
+    const el = document.getElementById('loadingOverlay');
+    if (el) el.style.display = 'none';
+    clearTimeout(loadingTimer);
+}
+
+// ========================================
+// 10. PREVENIR ACESSO DIRETO À PÁGINA DE SETUP
+// ========================================
+function showSetupPage() {
+    // Verificação extra antes de mostrar setup
+    if (STATE.currentUser) {
+        // Se há user logado, não mostrar setup
+        showApp();
+        return;
+    }
+
+    document.getElementById('setupPage').classList.remove('hidden');
+    document.getElementById('loginPage').classList.add('hidden');
+    document.getElementById('appContainer').classList.remove('active');
+}
+
+function showLoginPage() {
+    document.getElementById('setupPage').classList.add('hidden');
+    document.getElementById('loginPage').classList.remove('hidden');
+    document.getElementById('appContainer').classList.remove('active');
+
+    // Atualizar insígnia no login
+    const loginIns = document.getElementById('loginInsignia');
+    if (loginIns) loginIns.innerHTML = getInsigniaHTML(70);
+}
+
+// ========================================
+// CONCLUSÃO
+// ========================================
+console.log('%c✅ CORREÇÃO V7 APLICADA!', 'color:#059669;font-size:14px;font-weight:bold;');
+console.log('  ✓ Setup só aparece se NÃO existe admin');
+console.log('  ✓ Rede instável/offline → mostra login');
+console.log('  ✓ Proteção contra duplicidade de admin');
+console.log('  ✓ Regras Firebase para consulta pública');
+console.log('  ✓ Login anónimo para consulta de encarregados');
+console.log('  ✓ Indicador de conexão online/offline');
+console.log('  ✓ Loading nunca fica preso (max 20s)');
+</script>
 </body>
 </html>
